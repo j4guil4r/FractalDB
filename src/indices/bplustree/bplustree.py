@@ -110,8 +110,10 @@ class BPlusTree:
             new_node.keys = child.keys[mid:]
             child.keys = child.keys[:mid]
         else:
+            # si es interno, toma llaves e hijos de la derecha
             new_node.keys = child.keys[mid + 1:]
             new_node.children = child.children[mid + 1:]
+            # el original se queda con los de la izq.
             child.keys = child.keys[:mid]
             child.children = child.children[:mid + 1]
         parent.add_key(mid_key, new_node)
