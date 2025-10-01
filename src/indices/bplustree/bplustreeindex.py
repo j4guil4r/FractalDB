@@ -1,4 +1,4 @@
-from BPlusTree import BPlusTree
+from .bplustree import BPlusTree
 
 class BPlusTreeIndex:
     def __init__(self, order):
