@@ -60,6 +60,9 @@ class SequentialFile:
         if not self.main:
             return 0
         start = self._block_start_for(key)
+        while start > 0 and self.main[start - 1].key == key:
+            start = max(0, start - self.index_block_size)
+
         keys = [r.key for r in self.main[start:]]
         return start + bisect_left(keys, key)
 
