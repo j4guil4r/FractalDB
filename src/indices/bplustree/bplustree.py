@@ -3,6 +3,7 @@ class Node:
         self.is_leaf = is_leaf
         self.keys = []
         self.children = []
+        self.next = None
     
     def add_key(self, key, child=None):
         i = 0
@@ -45,30 +46,28 @@ class BPlusTree:
     def range_search(self, start_key, end_key):
         return self._range_search(self.root, start_key, end_key)
 
-    def _range_search(self, node, start_key, end_key):
-        if node.is_leaf:
-            results = []
-            for key in node.keys:
+    def range_search(self, start_key, end_key):
+        leaf = self._find_leaf(start_key)
+        results = []
+        current = leaf
+        while current is not None:
+            for key in current.keys:
                 if start_key <= key <= end_key:
                     results.append(key)
-            return results
-        else:
-            results = []
-            # Encontrar el primer hijo que podría contener start_key
+                elif key > end_key:
+                    return results
+            current = current.next
+        return results
+
+    def _find_leaf(self, key):
+        node = self.root
+        while not node.is_leaf:
+            # Encontrar el hijo
             i = 0
-            while i < len(node.keys) and start_key > node.keys[i]:
+            while i < len(node.keys) and key >= node.keys[i]:
                 i += 1
-            
-            # Buscar en el hijo encontrado y continuar mientras las claves del nodo sean <= end_key
-            while i < len(node.children):
-                child_results = self._range_search(node.children[i], start_key, end_key)
-                results.extend(child_results)
-                
-                # Si hemos pasado end_key, podemos detenernos
-                if i < len(node.keys) and node.keys[i] > end_key:
-                    break
-                i += 1
-            return results
+            node = node.children[i]
+        return node
 
     def insert(self, key):
         root = self.root
@@ -109,6 +108,9 @@ class BPlusTree:
         if child.is_leaf:
             new_node.keys = child.keys[mid:]
             child.keys = child.keys[:mid]
+
+            new_node.next = child.next
+            child.next = new_node
         else:
             # si es interno, toma llaves e hijos de la derecha
             new_node.keys = child.keys[mid + 1:]
