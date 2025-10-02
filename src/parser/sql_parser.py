@@ -1,5 +1,5 @@
 # parser_sql.py
-from lark import Lark, Transformer
+from lark import Lark
 
 grammar = r"""
 ?start: statement
