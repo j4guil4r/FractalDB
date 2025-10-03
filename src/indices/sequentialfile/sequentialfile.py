@@ -1,126 +1,104 @@
-from bisect import bisect_left, bisect_right
-from typing import Any, List, Tuple
+# src/indices/sequentialfile/sequentialfile.py
 
-class Record:
-    def __init__(self, key: Any, value: Any):
-        self.key = key
-        self.value = value
+import os
+import pickle
+import bisect
+from typing import List, Any, Generator
 
 class SequentialFile:
-    """ en main están las llaves ordenadas, en aux no ordenado add = O(1) """
-    def __init__(self, rebuild_threshold: int = 64, index_block_size: int = 128):
-        self.main: List[Record] = []
-        self.aux:  List[Record] = []
-        self.rebuild_threshold = rebuild_threshold
-        self.index_block_size = index_block_size
-        self.sparse_index: List[Tuple[Any, int]] = []
+    def __init__(self, file_path_prefix: str, record_manager, key_column_index: int, aux_capacity: int = 10):
+        self.prefix = file_path_prefix
+        self.main_path = f"{self.prefix}.dat"
+        self.aux_path = f"{self.prefix}.aux"
+        
+        self.record_manager = record_manager
+        self.key_col_idx = key_column_index
+        self.aux_capacity = aux_capacity
+        
+        if not os.path.exists(self.main_path):
+            open(self.main_path, 'w').close()
+        if not os.path.exists(self.aux_path):
+            open(self.aux_path, 'w').close()
 
-    # índice disperso (nos ayudara para busquedas rapidas)
-    def _build_sparse_index(self) -> None:
-        self.sparse_index.clear()
-        if not self.main:
-            return
-        for i in range(0, len(self.main), self.index_block_size):
-            self.sparse_index.append((self.main[i].key, i))
-
-    def _block_start_for(self, key: Any) -> int:
-        """ salta al posible bloque segun el indice disperso """
-        if not self.sparse_index:
+    def _get_aux_count(self) -> int:
+        if os.path.getsize(self.aux_path) == 0:
             return 0
-        keys = [k for (k, _) in self.sparse_index]
-        pos = bisect_right(keys, key) - 1
-        return self.sparse_index[pos][1] if pos >= 0 else 0
+        return os.path.getsize(self.aux_path) // self.record_manager.record_size
 
-    # funciones para hacer el merge y corroborar
-    def _merge_rebuild(self) -> None:
-        """ fusiona main y aux, ordena por key y regenera índice """
-        if not self.aux:
+    def _read_records_from_file(self, file_path: str) -> Generator[list, None, None]:
+        record_size = self.record_manager.record_size
+        if not os.path.exists(file_path):
             return
-        aux_sorted = sorted(self.aux, key=lambda r: r.key)
-        merged: List[Record] = []
-        i = j = 0
-        while i < len(self.main) and j < len(aux_sorted):
-            if self.main[i].key <= aux_sorted[j].key:
-                merged.append(self.main[i]); i += 1
+            
+        with open(file_path, 'rb') as f:
+            while True:
+                packed_data = f.read(record_size)
+                if not packed_data or len(packed_data) < record_size:
+                    break
+                yield list(self.record_manager.unpack(packed_data))
+
+    def add(self, record_values: list):
+        packed_record = self.record_manager.pack(record_values)
+        with open(self.aux_path, 'ab') as f:
+            f.write(packed_record)
+
+        if self._get_aux_count() >= self.aux_capacity:
+            self.reconstruct()
+
+    def reconstruct(self):
+        print("-> Capacidad del archivo auxiliar alcanzada. Iniciando reconstrucción...")
+        
+        main_records = list(self._read_records_from_file(self.main_path))
+        aux_records = list(self._read_records_from_file(self.aux_path))
+        
+        all_records = main_records + aux_records
+        
+        all_records.sort(key=lambda r: r[self.key_col_idx])
+        
+        temp_main_path = self.main_path + '.tmp'
+        with open(temp_main_path, 'wb') as f:
+            for record in all_records:
+                f.write(self.record_manager.pack(record))
+        
+        os.remove(self.main_path)
+        os.rename(temp_main_path, self.main_path)
+        
+        open(self.aux_path, 'w').close()
+        print("-> Reconstrucción completada.")
+
+    def search(self, key: Any) -> List[list]:
+        results = []
+        
+        for record in self._read_records_from_file(self.aux_path):
+            if record[self.key_col_idx] == key:
+                results.append(record)
+
+        main_records = list(self._read_records_from_file(self.main_path))
+        keys = [r[self.key_col_idx] for r in main_records]
+        
+        i = bisect.bisect_left(keys, key)
+        while i < len(keys) and keys[i] == key:
+            results.append(main_records[i])
+            i += 1
+            
+        return results
+
+    def range_search(self, start_key: Any, end_key: Any) -> List[list]:
+        results = []
+        
+        for record in self._read_records_from_file(self.aux_path):
+            if start_key <= record[self.key_col_idx] <= end_key:
+                results.append(record)
+
+        main_records = list(self._read_records_from_file(self.main_path))
+        keys = [r[self.key_col_idx] for r in main_records]
+
+        start_idx = bisect.bisect_left(keys, start_key)
+        for i in range(start_idx, len(keys)):
+            if keys[i] <= end_key:
+                results.append(main_records[i])
             else:
-                merged.append(aux_sorted[j]); j += 1
-        if i < len(self.main): merged.extend(self.main[i:])
-        if j < len(aux_sorted): merged.extend(aux_sorted[j:])
-        self.main = merged
-        self.aux.clear()
-        self._build_sparse_index()
+                break
 
-    def _check_rebuild(self) -> None:
-        """ su función es ver si ya se llego al limite """
-        if len(self.aux) >= self.rebuild_threshold:
-            self._merge_rebuild()
-
-    # estas dos funciones es para la busqueda binaria, derecha y izquierda
-    def _left_binary(self, key: Any) -> int:
-        if not self.main:
-            return 0
-        start = self._block_start_for(key)
-        while start > 0 and self.main[start - 1].key == key:
-            start = max(0, start - self.index_block_size)
-
-        keys = [r.key for r in self.main[start:]]
-        return start + bisect_left(keys, key)
-
-    def _right_binary(self, key: Any) -> int:
-        if not self.main:
-            return 0
-        start = self._block_start_for(key)
-        keys = [r.key for r in self.main[start:]]
-        return start + bisect_right(keys, key)
-
-    # funciones principales
-    def add(self, record: Record) -> None:
-        """ inserta en aux y cehca si estamos en el limite """
-        self.aux.append(record)
-        self._check_rebuild()
-
-    def search(self, key: Any) -> List[Record]:
-        """ devuelve todos los elementos con la llave, por eso usamos una lista """
-        out: List[Record] = []
-        if self.main:
-            lo = self._left_binary(key)
-            hi = self._right_binary(key)
-            if lo < hi:
-                out.extend(self.main[lo:hi])
-        if self.aux:
-            # aux es chica es pequeña = 64 así que aplicamos O(n)
-            out.extend([r for r in self.aux if r.key == key])
-        return out
-
-    def range_search(self, start_key: Any, end_key: Any) -> List[Record]:
-        """ devuelve registros que este dentro del rango start y end key """
-        out: List[Record] = []
-        if self.main:
-            lo = self._left_binary(start_key)
-            hi = self._right_binary(end_key)
-            if lo < hi:
-                out.extend(self.main[lo:hi])
-        if self.aux:
-            out.extend([r for r in self.aux if start_key <= r.key <= end_key])
-        # ordena por key
-        out.sort(key=lambda r: r.key)
-        return out
-
-    def remove(self, key: Any) -> bool:
-        """ borra todos los registros con esa key en main y aux"""
-        removed = False
-        if self.main:
-            lo = self._left_binary(key)
-            hi = self._right_binary(key)
-            if lo < hi:
-                del self.main[lo:hi]
-                removed = True
-        if self.aux:
-            new_aux = [r for r in self.aux if r.key != key]
-            if len(new_aux) != len(self.aux):
-                self.aux = new_aux
-                removed = True
-        # si hubo muchas inserciones recientes, igual se fusionará por umbral más adelante
-        # reconstruimos índice por si la ventana de bloques cambió
-        self._build_sparse_index()
-        return removed
+        results.sort(key=lambda r: r[self.key_col_idx])
+        return results
