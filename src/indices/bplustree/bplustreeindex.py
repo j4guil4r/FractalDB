@@ -1,25 +1,34 @@
+# src/indices/bplustree/bplustreeindex.py
+
+import os
+from typing import List, Any
+from ..base_index import BaseIndex
 from .bplustree import BPlusTree
 
-class BPlusTreeIndex:
-    def __init__(self, order, storage):
-        self.tree = BPlusTree(order)
-        self.storage = storage
+class BPlusTreeIndex(BaseIndex):
+    def __init__(self, table_name: str, column_name: str, data_dir: str = 'data', order: int = 3):
+        if order < 3:
+            raise ValueError("Order must be at least 3")
+            
+        index_filename = f"{table_name}_{column_name}.bpt"
+        self.file_path = os.path.join(data_dir, index_filename)
+        
+        os.makedirs(data_dir, exist_ok=True)
+        
+        self.tree = BPlusTree.load(self.file_path, order)
+        self.tree.order = order
+        self.tree.file_path = self.file_path
 
-    def add_record(self, key, row):
-        offset = self.storage.insert(row)
-        self.tree.insert((key, offset))
-        return offset
+    def add(self, key: Any, rid: int):
+        self.tree.insert(key, rid)
+        self.tree.save()
 
-    def search(self, key):
-        result = self.tree.search((key, 0))
-        if result is None:
-            return None
-        _, offset = result
-        return self.storage.get(offset)
+    def search(self, key: Any) -> List[int]:
+        return self.tree.search(key)
 
-    def range_search(self, start_key, end_key):
-        leaves = self.tree.range_search((start_key, 0), (end_key, float('inf')))
-        return [self.storage.get(offset) for key, offset in leaves]
-
-    def remove_record(self, key):
-        return self.tree.remove_key((key, 0))
+    def remove(self, key: Any, rid: int = None):
+        self.tree.remove(key, rid)
+        self.tree.save()
+        
+    def rangeSearch(self, start_key: Any, end_key: Any) -> List[int]:
+        return self.tree.range_search(start_key, end_key)
