@@ -21,15 +21,15 @@ class SequentialFileIndex(BaseIndex):
             aux_capacity=aux_capacity
         )
 
-    def add(self, key: Any, rid_or_values):
-        if not isinstance(rid_or_values, list):
-            raise TypeError("SequentialFileIndex.add espera una lista de valores de registro.")
-        self.engine.add(rid_or_values)
+    def add(self, key: Any, value: Any):
+        if not isinstance(value, list):
+            raise TypeError("SequentialFileIndex.add espera un 'value' de tipo list (registro completo).")
+        self.engine.add(value)
 
     def search(self, key: Any) -> List[Any]:
         return self.engine.search(key)
 
-    def remove(self, key: Any, rid: int = None):
+    def remove(self, key: Any, value: Any = None):
         print(f"WARN: La operación de borrado en Archivo Secuencial es costosa e implica una reconstrucción.")
         
         main_records = list(self.engine._read_records_from_file(self.engine.main_path))

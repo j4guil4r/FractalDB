@@ -3,7 +3,7 @@
 import os
 import pickle
 import bisect
-from typing import List, Any, Generator
+from typing import List, Any, Generator, Optional, Tuple
 
 class SequentialFile:
     def __init__(self, file_path_prefix: str, record_manager, key_column_index: int, aux_capacity: int = 10):
@@ -16,14 +16,22 @@ class SequentialFile:
         self.aux_capacity = aux_capacity
         
         if not os.path.exists(self.main_path):
-            open(self.main_path, 'w').close()
+            open(self.main_path, 'wb').close()
         if not os.path.exists(self.aux_path):
-            open(self.aux_path, 'w').close()
+            open(self.aux_path, 'wb').close()
+
+    def _get_record_count(self, file_path: str) -> int:
+        record_size = self.record_manager.record_size
+        if record_size == 0: return 0
+        
+        try:
+            file_size = os.path.getsize(file_path)
+            return file_size // record_size
+        except FileNotFoundError:
+            return 0
 
     def _get_aux_count(self) -> int:
-        if os.path.getsize(self.aux_path) == 0:
-            return 0
-        return os.path.getsize(self.aux_path) // self.record_manager.record_size
+        return self._get_record_count(self.aux_path)
 
     def _read_records_from_file(self, file_path: str) -> Generator[list, None, None]:
         record_size = self.record_manager.record_size
@@ -36,6 +44,41 @@ class SequentialFile:
                 if not packed_data or len(packed_data) < record_size:
                     break
                 yield list(self.record_manager.unpack(packed_data))
+
+    def _read_record_at_index(self, file_path: str, index: int) -> Optional[Tuple]:
+        record_size = self.record_manager.record_size
+        offset = index * record_size
+        
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(offset)
+                packed_data = f.read(record_size)
+                if packed_data and len(packed_data) == record_size:
+                    return self.record_manager.unpack(packed_data)
+        except (IOError, FileNotFoundError):
+            pass
+        return None
+
+    def _find_first_record_gte(self, key: Any) -> int:
+        low = 0
+        high = self._get_record_count(self.main_path)
+        
+        while low < high:
+            mid = (low + high) // 2
+            record = self._read_record_at_index(self.main_path, mid)
+            
+            if record is None:
+                high = mid
+                continue
+
+            record_key = record[self.key_col_idx]
+            
+            if record_key < key:
+                low = mid + 1
+            else:
+                high = mid
+                
+        return low
 
     def add(self, record_values: list):
         packed_record = self.record_manager.pack(record_values)
@@ -52,7 +95,6 @@ class SequentialFile:
         aux_records = list(self._read_records_from_file(self.aux_path))
         
         all_records = main_records + aux_records
-        
         all_records.sort(key=lambda r: r[self.key_col_idx])
         
         temp_main_path = self.main_path + '.tmp'
@@ -60,8 +102,7 @@ class SequentialFile:
             for record in all_records:
                 f.write(self.record_manager.pack(record))
         
-        os.remove(self.main_path)
-        os.rename(temp_main_path, self.main_path)
+        os.replace(temp_main_path, self.main_path)
         
         open(self.aux_path, 'w').close()
         print("-> Reconstrucción completada.")
@@ -73,13 +114,20 @@ class SequentialFile:
             if record[self.key_col_idx] == key:
                 results.append(record)
 
-        main_records = list(self._read_records_from_file(self.main_path))
-        keys = [r[self.key_col_idx] for r in main_records]
+        start_idx = self._find_first_record_gte(key)
         
-        i = bisect.bisect_left(keys, key)
-        while i < len(keys) and keys[i] == key:
-            results.append(main_records[i])
-            i += 1
+        record_count = self._get_record_count(self.main_path)
+        for i in range(start_idx, record_count):
+            record = self._read_record_at_index(self.main_path, i)
+            if record is None:
+                break
+            
+            record_key = record[self.key_col_idx]
+            
+            if record_key == key:
+                results.append(list(record))
+            elif record_key > key:
+                break
             
         return results
 
@@ -90,13 +138,18 @@ class SequentialFile:
             if start_key <= record[self.key_col_idx] <= end_key:
                 results.append(record)
 
-        main_records = list(self._read_records_from_file(self.main_path))
-        keys = [r[self.key_col_idx] for r in main_records]
+        start_idx = self._find_first_record_gte(start_key)
+        
+        record_count = self._get_record_count(self.main_path)
+        for i in range(start_idx, record_count):
+            record = self._read_record_at_index(self.main_path, i)
+            if record is None:
+                break
 
-        start_idx = bisect.bisect_left(keys, start_key)
-        for i in range(start_idx, len(keys)):
-            if keys[i] <= end_key:
-                results.append(main_records[i])
+            record_key = record[self.key_col_idx]
+            
+            if record_key <= end_key:
+                results.append(list(record))
             else:
                 break
 

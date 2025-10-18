@@ -7,28 +7,25 @@ from .bplustree import BPlusTree
 
 class BPlusTreeIndex(BaseIndex):
     def __init__(self, table_name: str, column_name: str, data_dir: str = 'data', order: int = 3):
-        if order < 3:
-            raise ValueError("Order must be at least 3")
-            
-        index_filename = f"{table_name}_{column_name}.bpt"
-        self.file_path = os.path.join(data_dir, index_filename)
-        
         os.makedirs(data_dir, exist_ok=True)
         
-        self.tree = BPlusTree.load(self.file_path, order)
-        self.tree.order = order
-        self.tree.file_path = self.file_path
+        file_prefix = f"{table_name}_{column_name}_bpt"
+        self.file_path_prefix = os.path.join(data_dir, file_prefix)
+        
+        self.tree = BPlusTree.load(self.file_path_prefix, order)
 
-    def add(self, key: Any, rid: int):
-        self.tree.insert(key, rid)
-        self.tree.save()
+    def add(self, key: Any, value: Any):
+        if not isinstance(value, int):
+             raise TypeError("BPlusTreeIndex.add espera un 'value' de tipo int (RID).")
+        self.tree.insert(key, value)
+        self.tree.save_meta()
 
-    def search(self, key: Any) -> List[int]:
+    def search(self, key: Any) -> List[Any]:
         return self.tree.search(key)
 
-    def remove(self, key: Any, rid: int = None):
-        self.tree.remove(key, rid)
-        self.tree.save()
+    def remove(self, key: Any, value: Any = None):
+        self.tree.remove(key, value)
+        self.tree.save_meta()
         
-    def rangeSearch(self, start_key: Any, end_key: Any) -> List[int]:
+    def rangeSearch(self, start_key: Any, end_key: Any) -> List[Any]:
         return self.tree.range_search(start_key, end_key)

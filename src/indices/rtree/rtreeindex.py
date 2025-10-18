@@ -16,13 +16,23 @@ class RTreeIndex(BaseIndex):
         p = index.Property()
         self.idx = index.Index(index_basename, properties=p)
 
-    def add(self, key: Tuple[float, ...], rid: int):
+    def add(self, key: Any, value: Any):
+        if not isinstance(value, int):
+             raise TypeError("RTreeIndex.add espera un 'value' de tipo int (RID).")
+        if not isinstance(key, (tuple, list)):
+             raise TypeError("RTreeIndex.add espera una 'key' de tipo tuple o list (coordenadas).")
+        
         bounding_box = tuple(list(key) * 2)
-        self.idx.insert(rid, bounding_box)
+        self.idx.insert(value, bounding_box)
 
-    def remove(self, key: Tuple[float, ...], rid: int):
+    def remove(self, key: Any, value: Any = None):
+        if value is None:
+            raise ValueError("RTreeIndex.remove requiere un 'value' (el RID) para eliminar.")
+        if not isinstance(key, (tuple, list)):
+             raise TypeError("RTreeIndex.remove espera una 'key' de tipo tuple o list (coordenadas).")
+
         bounding_box = tuple(list(key) * 2)
-        self.idx.delete(rid, bounding_box)
+        self.idx.delete(value, bounding_box)
 
     def radius_search(self, point: Tuple[float, ...], radius: float) -> List[int]:
         min_coords = [c - radius for c in point]
@@ -36,8 +46,8 @@ class RTreeIndex(BaseIndex):
         point_coords = tuple(point)
         return list(self.idx.nearest(point_coords, num_results=k))
 
-    def search(self, key: Any) -> List[int]:
+    def search(self, key: Any) -> List[Any]:
         raise NotImplementedError("Para R-Tree, use 'radius_search' o 'knn_search'.")
 
-    def rangeSearch(self, start_key: Any, end_key: Any) -> List[int]:
+    def rangeSearch(self, start_key: Any, end_key: Any) -> List[Any]:
         raise NotImplementedError("Para R-Tree, use 'radius_search' o 'knn_search'.")

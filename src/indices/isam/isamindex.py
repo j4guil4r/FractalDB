@@ -36,15 +36,18 @@ class ISAMIndex(BaseIndex):
         print("Construcción del índice ISAM finalizada.")
         return index
 
-    def add(self, key: Any, rid: int):
-        self.engine.add(key, rid)
+    def add(self, key: Any, value: Any):
+        if not isinstance(value, int):
+             raise TypeError("ISAMIndex.add espera un 'value' de tipo int (RID).")
+        self.engine.add(key, value)
 
-    def search(self, key: Any) -> List[int]:
+    def search(self, key: Any) -> List[Any]:
         return self.engine.search(key)
 
-    def remove(self, key: Any, rid: int = None):
-        print("WARN: La eliminación no está implementada para este índice ISAM.")
-        pass
+    def remove(self, key: Any, value: Any = None):
+        print(f"Iniciando eliminación lógica para la clave: {key}")
+        self.engine.remove(key)
+        print(f"Eliminación lógica completada para la clave: {key}")
 
-    def rangeSearch(self, start_key: Any, end_key: Any) -> List[int]:
-        raise NotImplementedError("La búsqueda por rango aún no está implementada para ISAM.")
+    def rangeSearch(self, start_key: Any, end_key: Any) -> List[Any]:
+        return self.engine.rangeSearch(start_key, end_key)
