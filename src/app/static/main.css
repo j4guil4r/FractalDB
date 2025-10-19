@@ -1,0 +1,166 @@
+/* ===== MiniDB · Neo-Data Theme (para el HTML entregado) ===== */
+:root{
+  --bg:#0b0f14;
+  --panel:#0f1620;
+  --panel-2:#0c131b;
+  --text:#e6f1ff;
+  --muted:#8aa0b3;
+  --accent:#00e5ff;       /* cian neón */
+  --accent-2:#5cff8d;     /* verde neón */
+  --danger:#ff4d6d;
+  --line:#102330;
+  --shadow:0 12px 30px rgba(0,0,0,.45);
+}
+
+*{box-sizing:border-box}
+html,body{
+  height:100%;
+  margin:0;
+  font:15px/1.55 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+  color:var(--text);
+  background: radial-gradient(1200px 800px at 20% -10%, #0e1b26 0%, #0b0f14 45%, #070b10 100%) fixed;
+}
+
+/* Grid sutil de “circuito” */
+body::before{
+  content:"";
+  position:fixed; inset:0;
+  background:
+    linear-gradient(transparent 31px, rgba(0,229,255,.06) 32px),
+    linear-gradient(90deg, transparent 31px, rgba(0,229,255,.06) 32px);
+  background-size:32px 32px;
+  mask: linear-gradient(#000, transparent 70%);
+  pointer-events:none;
+  z-index:0;
+}
+
+.container{
+  position:relative; z-index:1;
+  max-width:1100px; margin:0 auto; padding:32px 24px;
+}
+
+h1,h2,h3{margin:0 0 12px; letter-spacing:.4px}
+h1{
+  font-size:28px; font-weight:800; display:flex; align-items:center; gap:10px;
+  text-shadow:0 0 12px rgba(0,229,255,.35);
+}
+h1::before{
+  content:"▦"; color:var(--accent);
+  filter: drop-shadow(0 0 8px rgba(0,229,255,.6));
+}
+.sub{color:var(--muted)}
+
+section{margin-top:18px}
+
+/* Tarjetas base */
+textarea, #tables, #out, form#uploadForm{
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border:1px solid var(--line);
+  border-radius:14px;
+  box-shadow: var(--shadow), inset 0 0 0 1px rgba(255,255,255,.03);
+}
+
+/* Layout */
+.row{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
+.quick .chip{
+  border-radius:999px; padding:6px 10px; font-size:12px; cursor:pointer;
+  border:1px solid rgba(0,229,255,.35);
+  background: rgba(0,229,255,.08);
+  color:#9feaff;
+  transition:transform .06s ease, box-shadow .2s ease, filter .2s ease;
+}
+.quick .chip:hover{filter:saturate(1.15); box-shadow:0 6px 14px rgba(0,229,255,.25)}
+.quick .chip:active{transform:translateY(1px)}
+
+/* Inputs */
+input[type="text"], input[type="file"], textarea{
+  color:var(--text);
+  border:1px solid #142434;
+  background: rgba(6,12,18,.6);
+  outline:none;
+  transition: border-color .2s, box-shadow .2s;
+}
+input[type="text"], input[type="file"]{padding:10px 12px; border-radius:10px}
+input[type="text"]::placeholder{color:#6f889c}
+
+textarea{
+  width:100%; height:180px; padding:14px 16px; border-radius:14px; resize:vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size:13px; box-shadow: inset 0 0 0 1px rgba(0,229,255,.05);
+}
+textarea:focus, input[type="text"]:focus{
+  border-color: rgba(0,229,255,.6);
+  box-shadow: 0 0 0 3px rgba(0,229,255,.14), inset 0 0 0 1px rgba(0,229,255,.12);
+}
+
+/* Form de carga */
+form#uploadForm{display:flex; gap:10px; align-items:center; padding:10px}
+form#uploadForm input[type="text"]{width:240px}
+label{color:var(--muted); font-size:13px}
+input[type="checkbox"]{accent-color:var(--accent)}
+
+/* Botones */
+button{
+  cursor:pointer; border-radius:12px; padding:10px 14px; border:1px solid rgba(0,229,255,.5);
+  color:#001219;
+  background:
+    radial-gradient(120% 120% at 0% 0%, rgba(92,255,141,.65), rgba(0,229,255,.85)),
+    linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0));
+  box-shadow: 0 10px 22px rgba(0,229,255,.25), inset 0 0 0 1px rgba(255,255,255,.08);
+  text-shadow:0 1px 0 rgba(255,255,255,.25);
+  transition: transform .06s ease, box-shadow .2s ease, filter .2s ease;
+}
+button:hover{filter:saturate(1.12); box-shadow:0 12px 26px rgba(0,229,255,.35), inset 0 0 0 1px rgba(255,255,255,.1)}
+button:active{transform:translateY(1px)}
+
+/* Panel de tablas */
+#tables{
+  padding:14px 16px; margin-top:10px; max-height:220px; overflow:auto; white-space:pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size:12px; color:var(--muted);
+}
+
+/* Resultados */
+#out{padding:12px 12px}
+#out p small{
+  display:inline-block; margin:6px 0 8px; padding:4px 8px; border-radius:999px;
+  background: rgba(0,229,255,.08); border:1px solid rgba(0,229,255,.25); color:#9feaff;
+  box-shadow: inset 0 0 12px rgba(0,229,255,.08);
+}
+
+/* Tabla */
+table{
+  width:100%; border-collapse:separate; border-spacing:0; overflow:hidden;
+  border:1px solid var(--line); border-radius:14px;
+  background: rgba(3,10,16,.6);
+  box-shadow: var(--shadow), inset 0 0 0 1px rgba(0,229,255,.05);
+}
+th, td{padding:10px 12px; font-size:13px; border-bottom:1px solid #0f2432}
+th{
+  position:sticky; top:0;
+  background: linear-gradient(180deg, rgba(0,229,255,.12), rgba(0,229,255,.02));
+  text-align:left; font-weight:600; letter-spacing:.3px; z-index:1;
+}
+td{color:#cfe6ff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
+tr:nth-child(even) td{background: rgba(0,229,255,.02)}
+tr:hover td{background: rgba(92,255,141,.05)}
+
+/* Scrollbars */
+*{scrollbar-width:thin; scrollbar-color: rgba(0,229,255,.5) rgba(0,0,0,.2)}
+*::-webkit-scrollbar{height:10px; width:10px}
+*::-webkit-scrollbar-thumb{
+  background: linear-gradient(180deg, rgba(0,229,255,.7), rgba(92,255,141,.8));
+  border-radius:10px; border:2px solid #081017;
+}
+*::-webkit-scrollbar-track{background:#081017; border-radius:10px}
+
+/* Footer */
+footer{margin:28px 0 6px; color:var(--muted); font-size:12px}
+
+/* Responsive */
+@media (max-width: 760px){
+  .container{padding:22px 16px}
+  form#uploadForm{flex-direction:column; align-items:stretch}
+  form#uploadForm input[type="text"], form#uploadForm input[type="file"]{width:100%}
+  .row{gap:10px}
+}
