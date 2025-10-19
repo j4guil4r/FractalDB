@@ -556,9 +556,57 @@ Ejemplo:
 ````
 
 ## 3. Resultados Experimentales
+Para evaluar el desempeño de las técnicas de indexación implementadas, se ejecutaron pruebas de inserción, búsqueda específica y búsqueda por rango sobre un conjunto de datos sintético. Se midieron dos métricas clave: el **tiempo de ejecución promedio** por operación (en milisegundos) y el **promedio de accesos a disco** (lecturas y escrituras de bloques) por operación.
+
+Se insertaron **1000 registros** con claves enteras (ID) en orden aleatorio (excepto para la construcción inicial de ISAM) en tablas separadas para cada índice. Luego, se realizaron **200 búsquedas específicas** por claves existentes aleatorias y **100 búsquedas por rango** (abarcando 20 claves consecutivas) con rangos iniciales aleatorios.
+
+### 3.1 Tabla Comparativa de Desempeño Promedio por Operación
+
+| Operación             | Métrica            | B+Tree (`O=50`) | Hash (`bs=4`) | ISAM (`ic=64, dc=4`) | Sequential (`ac=100`) |
+| :-------------------- | :----------------- | :-------------- | :------------ | :------------------- | :-------------------- |
+| **Inserción** | **Tiempo (ms/ins)**| 17.63           | 29.63         | 28.03 (overflow)   | **1.78** (w/rebuild)  |
+|                       | **Lecturas/ins** | 1.95            | 1.25          | 15.75 (overflow)   | 5.52 (w/rebuild)    |
+|                       | **Escrituras/ins** | 2.08            | 2.76          | 1.25 (overflow)    | **6.50** (w/rebuild)  |
+| **Búsqueda Específica**| **Tiempo (ms/bús)**| 0.67            | **0.48** | 2.85               | 1.78                  |
+|                       | **Lecturas/bús** | 2.00            | **1.00** | 15.50              | 12.99                 |
+|                       | **Escrituras/bús** | 0               | 0             | 0                  | 0                     |
+| **Búsqueda Rango** | **Tiempo (ms/bús)**| **0.78** | N/A           | 3.55               | 4.50                  |
+|                       | **Lecturas/bús** | **2.43** | N/A           | 8.31               | 32.97                 |
+|                       | **Escrituras/bús** | 0               | N/A           | 0                  | 0                     |
+
+*(Nota: Los I/O de inserción para ISAM son solo del overflow; los de Sequential incluyen las reconstrucciones. El `order` del B+Tree es 50, `bucket_size` de Hash es 4, `index_capacity`/`data_capacity` de ISAM son 64/4, y `aux_capacity` de Sequential es 100.)*
+
+### 3.2 Discusión y Análisis
+
+Los resultados experimentales reflejan claramente las características teóricas de cada estructura de indexación:
+
+* **Inserción:**
+    * El **Sequential File** muestra el tiempo promedio por inserción más bajo (~1.78 ms). Sin embargo, esto es engañoso, ya que este promedio incluye el costo amortizado de **10 reconstrucciones completas** del archivo principal durante las 1000 inserciones (debido a `aux_capacity=100`). Los **altísimos promedios de I/O** (~5.5 lecturas y ~6.5 escrituras por inserción) revelan el verdadero costo de esta operación a largo plazo, siendo la menos eficiente en disco.
+    * **Hash Index** presenta el tiempo de inserción más alto (~30 ms) y un número elevado de escrituras (~2.76/ins). Esto se debe a las divisiones de buckets (`split`) que ocurren a medida que se llena y, crucialmente, a la escritura del archivo de metadatos (`.meta`) después de *cada* inserción individual en esta implementación.
+    * **ISAM (Overflow)** es también relativamente lento (~28 ms) y, notablemente, requiere **muchas lecturas** (~15.75/ins). Esto se debe a la necesidad de recorrer las cadenas de desbordamiento (overflow chains) para encontrar el final donde insertar el nuevo registro. Las escrituras son bajas (~1.25/ins) porque solo se escribe la nueva página de overflow y se actualiza un puntero.
+    * **B+Tree** ofrece un rendimiento de inserción equilibrado (~18 ms) con bajos accesos a disco (~2 lecturas y ~2 escrituras por inserción). El `order=50` minimiza las divisiones, resultando en una eficiencia considerablemente mejor que Hash e ISAM Overflow en términos de I/O.
+
+* **Búsqueda Específica (`search`):**
+    * **Hash Index** es el claro ganador, logrando el tiempo más bajo (~0.48 ms) y el mínimo teórico de **1 lectura** por búsqueda. Esto confirma su eficiencia $O(1)$ (en promedio) para accesos directos por clave.
+    * **B+Tree** es extremadamente competitivo (~0.67 ms) requiriendo solo **2 lecturas** en promedio. Esto coincide con la altura esperada del árbol para 1000 registros con `order=50` (raíz + hoja), demostrando su eficiencia logarítmica $O(\log_b N)$.
+    * **Sequential File** es considerablemente más lento (~1.78 ms) y requiere más lecturas (~13/bús). Aunque usa búsqueda binaria en disco en el archivo principal, también debe escanear linealmente el archivo auxiliar (`.aux`), lo que penaliza el rendimiento.
+    * **ISAM** muestra el peor rendimiento en búsqueda específica (~2.85 ms, ~15.5 lecturas). Esto se debe a la necesidad de recorrer las cadenas de overflow, que se alargan con las inserciones post-construcción, degradando la eficiencia inicial.
+
+* **Búsqueda por Rango (`rangeSearch`):**
+    * **B+Tree** es el ganador indiscutible (~0.78 ms, ~2.4 lecturas). Su capacidad para localizar rápidamente la hoja inicial y luego seguir eficientemente los punteros `next_leaf` lo hace ideal para esta operación. Las ~2.4 lecturas sugieren que, en promedio, solo necesita leer la hoja inicial y una o dos hojas siguientes para cubrir el rango.
+    * **ISAM** muestra un rendimiento decente (~3.55 ms, ~8.3 lecturas). Una vez corregido el error de construcción, puede usar su estructura de índice para encontrar el inicio y luego escanear secuencialmente las páginas principales y sus overflows. Es más lento que B+Tree porque las cadenas de overflow pueden requerir saltos adicionales.
+    * **Sequential File** es el más lento (~4.50 ms) y requiere **muchas lecturas** (~33/bús). Aunque encuentra el inicio con búsqueda binaria, el escaneo secuencial posterior sobre el archivo principal en disco y el escaneo completo del auxiliar resultan costosos.
+    * **Hash Index** no soporta esta operación, como se esperaba.
+
+### 3.3 Conclusiones Experimentales
+
+Los experimentos validan el comportamiento teórico esperado:
+* **Hash Index** es óptimo para búsquedas exactas pero ineficiente para inserciones (en esta implementación) y no soporta rangos.
+* **B+Tree** demuestra ser la estructura más **equilibrada y versátil**, con excelente rendimiento en búsquedas exactas y por rango, y una inserción razonablemente eficiente gracias al alto `order`.
+* **ISAM** tiene un buen rendimiento inicial (reflejado en las búsquedas por rango después de la corrección), pero se degrada notablemente con las inserciones debido a las cadenas de overflow.
+* **Sequential File** sufre enormemente en la inserción debido a las costosas reconstrucciones, y sus búsquedas, aunque optimizadas con búsqueda binaria en disco, son menos eficientes que las estructuras de árbol o hashing.
 
 ## 4. Pruebas de uso
-
 ### 4.1 Pruebas de la interfaz
 
 ### 4.2 Video
