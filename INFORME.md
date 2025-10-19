@@ -606,6 +606,34 @@ Los experimentos validan el comportamiento teórico esperado:
 * **ISAM** tiene un buen rendimiento inicial (reflejado en las búsquedas por rango después de la corrección), pero se degrada notablemente con las inserciones debido a las cadenas de overflow.
 * **Sequential File** sufre enormemente en la inserción debido a las costosas reconstrucciones, y sus búsquedas, aunque optimizadas con búsqueda binaria en disco, son menos eficientes que las estructuras de árbol o hashing.
 
+### 3.4 Resultados Específicos para R-Tree
+
+El análisis de desempeño para el R-Tree se centra en el **tiempo de ejecución promedio** en ms para sus operaciones específicas.
+
+Se insertaron **1000 puntos** 2D aleatorios en la tabla indexada con R-Tree. Posteriormente, se realizaron pruebas de búsqueda por radio y búsqueda de K vecinos más cercanos (KNN).
+
+**Tabla de Tiempos Promedio (R-Tree):**
+
+| Operación             | Parámetro        | Tiempo Promedio (ms) |
+| :-------------------- | :--------------- | :------------------- |
+| **Inserción** (`add`) | N/A              | **0.9579** ms/ins    |
+| **Búsqueda Radio** | Radio = 0.10     | 0.3317 ms/bús        |
+|                       | Radio = 1.00     | 0.2636 ms/bús        |
+|                       | Radio = 5.00     | 1.6960 ms/bús        |
+|                       | Radio = 10.00    | 4.3745 ms/bús        |
+| **Búsqueda KNN** | K = 1            | 0.1238 ms/bús        |
+|                       | K = 5            | 0.1004 ms/bús        |
+|                       | K = 10           | 0.0813 ms/bús        |
+|                       | K = 20           | 0.1041 ms/bús        |
+
+**Análisis (R-Tree):**
+
+* **Inserción:** El R-Tree muestra un tiempo de inserción muy eficiente (~0.96 ms), comparable e incluso más rápido que algunas de las otras estructuras, demostrando la optimización de la librería `rtree`.
+* **Búsqueda por Radio:** Como era de esperar, el tiempo de ejecución aumenta notablemente a medida que el radio de búsqueda se incrementa. Un radio mayor implica un área de consulta más extensa, lo que requiere que el índice explore más ramas y nodos, y potencialmente devuelva un mayor número de resultados. Aun así, los tiempos se mantienen bajos (menos de 5 ms incluso para un radio relativamente grande).
+* **Búsqueda KNN:** La búsqueda de los K vecinos más cercanos es extremadamente rápida (~0.1 ms) y su tiempo parece ser relativamente insensible al valor de K (dentro del rango probado). Esto sugiere que el algoritmo KNN implementado es muy eficiente y no se degrada significativamente al solicitar más vecinos cercanos.
+
+Por lo tanto, se valida la función de R-Tree para consultas espaciales, ofreciendo tiempos de respuesta muy rápidos tanto para búsquedas por proximidad (radio) como por vecinos cercanos (KNN).
+
 ## 4. Pruebas de uso
 ### 4.1 Pruebas de la interfaz
 
