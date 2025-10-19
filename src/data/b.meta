@@ -1,0 +1,25 @@
+{
+    "schema": [
+        [
+            "Nombre",
+            "VARCHAR",
+            18
+        ],
+        [
+            "Edad",
+            "INT",
+            0
+        ],
+        [
+            "Ciudad",
+            "VARCHAR",
+            14
+        ],
+        [
+            "Correo Electr\u00f3nico",
+            "VARCHAR",
+            27
+        ]
+    ],
+    "index_definitions": {}
+}
