@@ -1,0 +1,9 @@
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app  # Montamos src en /app (coincide con WORKDIR)
+    restart: always
