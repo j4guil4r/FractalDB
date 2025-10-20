@@ -164,3 +164,37 @@ footer{margin:28px 0 6px; color:var(--muted); font-size:12px}
   form#uploadForm input[type="text"], form#uploadForm input[type="file"]{width:100%}
   .row{gap:10px}
 }
+
+/* --- Progress / Timer -------------------------------------------------- */
+.hidden{ display:none !important; }
+
+.progress{
+  border:1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border-radius:14px; padding:12px; box-shadow: var(--shadow), inset 0 0 0 1px rgba(255,255,255,.03);
+}
+
+.progress-head, .progress-foot{
+  display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px;
+}
+.progress-head strong{ color:#9feaff; letter-spacing:.2px }
+
+.bar{
+  position:relative; height:12px; border-radius:999px; overflow:hidden; margin:8px 0 6px;
+  background: rgba(0,229,255,.08); border:1px solid rgba(0,229,255,.25);
+}
+.bar-fill{
+  position:absolute; inset:0 auto 0 0; width:0%;
+  background: linear-gradient(90deg, rgba(0,229,255,.9), rgba(92,255,141,.9));
+  box-shadow: 0 0 18px rgba(0,229,255,.35);
+  transition: width .15s ease;
+}
+.bar-fill.indeterminate{
+  width:100%;
+  background:
+    repeating-linear-gradient(45deg,
+      rgba(0,229,255,.85) 0 12px,
+      rgba(92,255,141,.85) 12px 24px);
+  animation: stripes 1s linear infinite;
+}
+@keyframes stripes { from { background-position: 0 0; } to { background-position: 40px 0; } }

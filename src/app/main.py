@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-import os
+import tempfile, os
 import re
 
 from parser.sqlparser import SQLParser     # ← aquí el cambio
@@ -117,12 +117,32 @@ async def upload_csv(
 ):
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Solo se aceptan CSV")
-    content = await file.read()
+
+    # 1) Guardar a un archivo temporal sin cargar todo a RAM
     try:
-        inserted = get_engine().load_csv_bytes(table, content, has_header=has_header)
-        return {"ok": True, "inserted": inserted}
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            while True:
+                chunk = await file.read(1_048_576)  # 1 MB
+                if not chunk:
+                    break
+                tmp.write(chunk)
+        tmp_path = tmp.name
+    except Exception as e:
+        raise HTTPException(400, f"Error guardando archivo: {e}")
+
+    # 2) Cargar por ruta con inserción en streaming y reconstrucción de índices al final
+    try:
+        inserted, columns = get_engine().load_csv_path(
+            table=table,
+            csv_path=tmp_path,
+            has_header=has_header,
+        )
+        return {"ok": True, "table": table, "inserted": inserted, "columns": columns}
     except Exception as e:
         raise HTTPException(400, f"Error al cargar CSV: {e}")
+    finally:
+        try: os.remove(tmp_path)
+        except: pass
 
 @app.get("/api/tables")
 async def list_tables():

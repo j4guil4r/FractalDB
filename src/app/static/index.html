@@ -65,6 +65,19 @@
         <div id="dropZone" class="dropzone">
           <span id="dzLabel">Arrastra tu archivo .csv aquí o haz clic para buscar</span>
         </div>
+        <!-- Progreso de carga -->
+        <div id="uploadStatus" class="progress hidden" aria-live="polite">
+          <div class="progress-head">
+            <strong id="progLabel">Listo para subir</strong>
+            <span id="progTime">00:00</span>
+          </div>
+          <div class="bar"><div id="progBar" class="bar-fill"></div></div>
+          <div class="progress-foot">
+            <span id="progPct">0%</span>
+            <span id="progSpeed">0 KB/s</span>
+          </div>
+        </div>
+
 
         <div class="row" style="justify-content:flex-end;">
           <button id="uploadBtn">Subir CSV</button>
@@ -184,19 +197,118 @@
       if (!table) return showError('Pon un nombre de tabla.');
       const file = pickedFile;
       if (!file) return showError('Arrastra un .csv o haz clic en el cuadro.');
+
+      // UI: preparar barra y timer
+      const box = $('#uploadStatus');
+      const label = $('#progLabel');
+      const bar = $('#progBar');
+      const pct = $('#progPct');
+      const speed = $('#progSpeed');
+      const tspan = $('#progTime');
+      box.classList.remove('hidden');
+      label.textContent = 'Subiendo…';
+      bar.classList.remove('indeterminate');
+      bar.style.width = '0%';
+      pct.textContent = '0%';
+      speed.textContent = '0 KB/s';
+      tspan.textContent = '00:00';
+
       const fd = new FormData();
       fd.append('table', table);
       fd.append('file', file);
-      if ($('#hasHeader').checked) fd.append('has_header', 'true'); else fd.append('has_header', 'false');
+      fd.append('has_header', $('#hasHeader').checked ? 'true' : 'false');
 
-      try {
-        const res = await fetch('/api/upload', { method:'POST', body: fd });
-        let data; try { data = await res.json(); } catch { data = await res.text(); }
-        if (!res.ok) return showError(typeof data === 'string' ? data : data.detail || 'Error');
-        $('#out').innerHTML = show(data);
-        listTables();
-      } catch (e) { showError('Network/JS error: ' + e); }
+      const uploadBtn = $('#uploadBtn');
+      uploadBtn.disabled = true;
+
+      // Temporizador y cálculo de velocidad
+      const start = performance.now();
+      let lastBytes = 0;
+      let lastTs = start;
+      let tickTimer = null;
+
+      function fmtTime(ms){
+        const s = Math.floor(ms/1000);
+        const m = Math.floor(s/60);
+        const r = s % 60;
+        return `${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`;
+      }
+      function fmtBytes(b){
+        if (b < 1024) return `${b} B/s`;
+        if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB/s`;
+        return `${(b/1024/1024).toFixed(2)} MB/s`;
+      }
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+
+      // Progreso real de subida
+      xhr.upload.onprogress = (e) => {
+        const now = performance.now();
+        if (e.lengthComputable) {
+          const ratio = e.total ? e.loaded / e.total : 0;
+          const perc = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+          bar.style.width = perc + '%';
+          pct.textContent = perc + '%';
+        }
+        // velocidad instantánea suavizada
+        const deltaBytes = e.loaded - lastBytes;
+        const deltaMs = Math.max(1, now - lastTs);
+        const bytesPerSec = deltaBytes * 1000 / deltaMs;
+        speed.textContent = fmtBytes(bytesPerSec);
+        lastBytes = e.loaded;
+        lastTs = now;
+      };
+
+      xhr.onloadstart = () => {
+        // timer de reloj
+        tickTimer = setInterval(() => {
+          tspan.textContent = fmtTime(performance.now() - start);
+        }, 250);
+      };
+
+      xhr.onreadystatechange = () => {
+        // Cuando termina de subir pero el servidor aún procesa:
+        // forzamos barra "indeterminada" para feedback visual.
+        if (xhr.readyState === 2 || xhr.readyState === 3) {
+          // cabeceras recibidas / cargando respuesta
+          label.textContent = 'Procesando…';
+          bar.classList.add('indeterminate');
+          bar.style.width = '100%';
+          pct.textContent = '100%';
+        }
+        if (xhr.readyState === 4) {
+          clearInterval(tickTimer);
+          uploadBtn.disabled = false;
+
+          // Quitar animación indeterminada y dejar la barra llena
+          bar.classList.remove('indeterminate');
+          bar.style.width = '100%';
+
+          let data = null;
+          try { data = JSON.parse(xhr.responseText); } catch { data = xhr.responseText; }
+
+          if (xhr.status >= 200 && xhr.status < 300) {
+            label.textContent = 'Completado';
+            $('#out').innerHTML = show(data);
+            listTables();
+          } else {
+            label.textContent = 'Error';
+            showError(typeof data === 'string' ? data : data.detail || 'Error');
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        clearInterval(tickTimer);
+        uploadBtn.disabled = false;
+        label.textContent = 'Error de red';
+        showError('Network error durante la subida.');
+      };
+
+      xhr.send(fd);
     }
+
 
     async function listTables() {
       try {
