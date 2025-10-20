@@ -1,0 +1,44 @@
+# VCS / IDE / cachés
+.git
+.gitignore
+.idea
+.vscode
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints
+.mypy_cache/
+.pytest_cache/
+
+# Entornos y dependencias locales
+venv/
+.venv/
+env/
+*.egg-info/
+
+# Datos y artefactos pesados
+data/
+src/data/
+datasets/
+core/data/
+**/*.csv
+**/*.parquet
+**/*.tsv
+**/*.jsonl
+**/*.zip
+**/*.gz
+**/*.xz
+**/*.7z
+**/*.dat
+**/*.idx*
+**/*.bin
+**/*.log
+**/*.tmp
+
+# Builds locales
+build/
+dist/
+*.whl
+
+# Otros
+.DS_Store
+.env
