@@ -212,6 +212,138 @@ class Engine:
             inserted += 1
 
         return inserted
+    
+    def load_csv_path(self, table: str, csv_path: str, has_header: bool = True):
+        import csv as _csv
+        import os
+        if not os.path.exists(csv_path):
+            raise ValueError(f"Archivo no encontrado: {csv_path}")
+
+        # A) MUESTREO NEUTRAL: inferir esquema sin hardcodear columnas
+        sample_rows = []
+        columns = []
+        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = _csv.reader(f)
+            header = next(reader, None) if has_header else None
+            if has_header and not header:
+                raise ValueError("Se esperaba header en el CSV")
+            columns = header if has_header else []
+            for i, row in enumerate(reader, start=1):
+                sample_rows.append(row)
+                if i >= 50_000:
+                    break
+        schema = self._infer_schema_from_rows(columns if has_header else None, sample_rows)
+
+        # Crear tabla si no existe
+        if table not in self.catalog:
+            t = Table(table, schema=schema, data_dir=self.data_dir)
+            self.catalog[table] = t
+        else:
+            t = self.catalog[table]
+
+        # B) COMPILAR CASTERS desde el esquema (genérico)
+        casters = self._compile_casters(schema)  # ver helper abajo
+
+        # C) CARGA POR CHUNKS, SI HAY PANDAS/ARROW USAMOS FAST PATH; SI NO, CSV PURO
+        inserted = 0
+        try:
+            import pandas as pd
+            use_arrow = False
+            try:
+                import pyarrow  # noqa
+                use_arrow = True
+            except Exception:
+                pass
+
+            read_opts = dict(
+                chunksize=150_000,
+                header=0 if has_header else None,
+                encoding="utf-8-sig",
+                # Truco genérico: TODO como string, sin NA parsing, luego casteas tú
+                dtype=str,
+                na_filter=False,
+                low_memory=False,
+            )
+            if use_arrow:
+                read_opts["engine"] = "pyarrow"
+
+            rm = t.record_manager
+            with open(t.dat_path, "ab", buffering=2**20) as fout:
+                page_size = 4096
+                buf = bytearray(page_size)
+                pos = 0
+
+                for chunk in pd.read_csv(csv_path, **read_opts):
+                    # Si no había nombres (CSV sin header), inventa genéricos
+                    if not columns:
+                        columns = [f"col{i}" for i in range(len(chunk.columns))]
+                    # Alinear por posición
+                    # itertuples es el menos malo en overhead sin copiar
+                    for row in chunk.itertuples(index=False, name=None):
+                        rec_vals = self._cast_row_fast(row, casters)  # ver helper abajo
+                        rec = rm.pack(rec_vals)
+                        if pos + len(rec) > page_size:
+                            fout.write(memoryview(buf)[:pos]); pos = 0
+                        buf[pos:pos+len(rec)] = rec; pos += len(rec)
+                        inserted += 1
+                if pos:
+                    fout.write(memoryview(buf)[:pos])
+
+        except Exception:
+            # Fallback CSV puro, también genérico (sin nombres)
+            rm = t.record_manager
+            with open(csv_path, "r", encoding="utf-8-sig", newline="") as f, \
+                open(t.dat_path, "ab", buffering=2**20) as fout:
+                reader = _csv.reader(f)
+                if has_header:
+                    hdr = next(reader, None)
+                    if hdr and not columns:
+                        columns = hdr
+                page_size = 4096
+                buf = bytearray(page_size)
+                pos = 0
+                for row in reader:
+                    if not row:
+                        continue
+                    rec_vals = self._cast_row_fast(row, casters)
+                    rec = rm.pack(rec_vals)
+                    if pos + len(rec) > page_size:
+                        fout.write(memoryview(buf)[:pos]); pos = 0
+                    buf[pos:pos+len(rec)] = rec; pos += len(rec)
+                    inserted += 1
+                if pos:
+                    fout.write(memoryview(buf)[:pos])
+
+        # D) Reconstruir índices al final (una sola vez)
+        try:
+            self.idx.rebuild_all(t)
+        except Exception:
+            pass
+
+        if not columns:
+            columns = [name for name, _t, _l in t.schema]
+        return inserted, columns
+    
+    def _compile_casters(self, schema):
+        casters = []
+        for _name, base_type, length in schema:
+            # Cuidado: usar default bindings para evitar cierre lento
+            if base_type == "INT":
+                casters.append(lambda v, _int=int: _int(v) if v != "" else 0)
+            elif base_type == "FLOAT":
+                casters.append(lambda v, _float=float: _float(v) if v != "" else 0.0)
+            else:
+                if length and length < 255:
+                    L = int(length)
+                    casters.append(lambda v, _str=str, _L=L: (_str(v)[:_L]))
+                else:
+                    casters.append(lambda v, _str=str: _str(v))
+        return casters
+
+    def _cast_row_fast(self, row_tuple, casters):
+        # Funciona con tuplas de pandas y con listas de csv.reader
+        # No ramifica por columna; aplica el caster ya vinculado
+        return [f(v) for f, v in zip(casters, row_tuple)]
 
 
     # ---------- Implementaciones por acción ----------
