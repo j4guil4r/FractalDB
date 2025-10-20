@@ -634,8 +634,6 @@ Se insertaron **1000 puntos** 2D aleatorios en la tabla indexada con R-Tree. Pos
 
 Por lo tanto, se valida la función de R-Tree para consultas espaciales, ofreciendo tiempos de respuesta muy rápidos tanto para búsquedas por proximidad (radio) como por vecinos cercanos (KNN).
 
-## 4. Pruebas de uso
-### 4.1 Pruebas de la interfaz
-
-### 4.2 Video
-Enlace del video :
+## 4. Video
+Enlace del video : 
+[\[Drive\] ](https://drive.google.com/drive/folders/1OjiddPW6Uwz2kcC2MUFvXh_KFCwNb3FT?usp=sharing) 
