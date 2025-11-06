@@ -50,6 +50,19 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
             columns.append(col_def)
         return {"action": "create_table", "table": table, "columns": columns}
 
+    if cmd == "CREATE_INDEX":
+        index_name = plan.get("index_name")
+        table_name = plan.get("table_name")
+        column_name = plan.get("column_name")
+        index_type = plan.get("index_type")
+        return {
+            "action": "create_index",
+            "index_name": index_name,
+            "table": table_name,
+            "column": column_name,
+            "index_type": index_type
+        }
+    
     if cmd == "INSERT":
         return {"action": "insert", "table": plan["table_name"], "values": plan.get("values", [])}
 
@@ -105,9 +118,9 @@ async def run_sql(payload: SQLPayload):
         # Si solo hubo una, devuelvo directamente el resultado (para que tu UI muestre la tabla)
         return results[0]["result"] if len(results) == 1 else {"ok": True, "results": results}
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {ve}")
+        raise HTTPException(status_code=400, detail=f"Error al procesar SQL aaaa: {ve}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {e}")
+        raise HTTPException(status_code=400, detail=f"Error al procesar SQL bbbb: {e}")
 
 @app.post("/api/upload")
 async def upload_csv(

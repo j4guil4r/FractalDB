@@ -25,6 +25,12 @@ class SQLParser:
             r"DELETE FROM (\w+) WHERE (.*)",
             re.IGNORECASE
         )
+        self.re_create_index = re.compile(
+            r"CREATE INDEX (\w+) ON (\w+)\((\w+)\) TYPE (\w+)",
+            re.IGNORECASE
+        )
+
+
 
     def parse(self, sql: str) -> Dict[str, Any]:
         sql = sql.strip().rstrip(';')
@@ -40,6 +46,10 @@ class SQLParser:
                 'table_name': match.group(1),
                 'from_file': match.group(2)
             }
+        
+        match = self.re_create_index.fullmatch(sql)
+        if match:
+            return self._parse_create_index(match.group(1), match.group(2), match.group(3), match.group(4))
 
         match = self.re_insert.fullmatch(sql)
         if match:
@@ -53,7 +63,7 @@ class SQLParser:
         if match:
             return self._parse_delete(match.group(1), match.group(2))
 
-        raise ValueError(f"Consulta SQL no válida o no soportada: {sql}")
+        raise ValueError(f"Consulta SQL no válida o no soportada WAWAAAAA: {sql}")
 
     # ----------------- helpers internos -----------------
 
@@ -221,6 +231,15 @@ class SQLParser:
                 'op': '=',
                 'value': self._cast_value(match.group(2))
             }
+        }
+
+    def _parse_create_index(self, index_name: str, table_name: str, column_name: str, index_type: str) -> Dict[str, Any]:
+        return {
+            'command': 'CREATE_INDEX',
+            'index_name': index_name,
+            'table_name': table_name,
+            'column_name': column_name,
+            'index_type': index_type
         }
 
     def _cast_value(self, value: str) -> Any:

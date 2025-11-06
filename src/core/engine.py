@@ -108,6 +108,9 @@ class DatabaseEngine:
                 
             if command == 'DELETE':
                 return self._handle_delete(plan)
+            
+            if command == 'CREATE_INDEX':
+                return self._handle_create_index(plan) 
 
             return f"Comando '{command}' no reconocido."
 
@@ -282,6 +285,27 @@ class DatabaseEngine:
                 index_obj.remove(key, rid)
         
         return f"{len(rids_to_delete)} registros eliminados."
+    
+    def _handle_create_index(self, plan: Dict) -> str:
+        table_name = plan['table_name']
+        column_name = plan['column_name']
+        index_name = plan['index_name']
+        index_type = plan['index_type']  # Como 'BTREE' o cualquier otro tipo de índice que necesites
+
+        # Verificar si la tabla existe
+        if table_name not in self.tables:
+            raise ValueError(f"Tabla '{table_name}' no encontrada.")
+        
+        table = self.tables[table_name]
+
+        # Llamar al método para crear el índice
+        self.idx.create_index(table, column_name, index_type)
+
+        # Registrar el índice en las definiciones de la tabla
+        table.index_definitions[column_name] = index_type
+        table._save_metadata()  # Guardar metadatos de la tabla con la definición del índice
+
+        return f"Índice '{index_name}' creado exitosamente en la columna '{column_name}' de la tabla '{table_name}'."
 
     def _cast_row_values(self, row: List[str], schema: List[Tuple]) -> List[Any]:
         if len(row) != len(schema):

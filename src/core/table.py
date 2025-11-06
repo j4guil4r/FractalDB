@@ -18,6 +18,7 @@ class Table:
         elif schema:
             self.schema = schema
             self.index_definitions: Dict[str, str] = {}
+            self.index_specs: List[Tuple[str, str]] = []
             self._save_metadata()
         else:
             raise ValueError("Se debe proporcionar un esquema para una tabla nueva.")
@@ -28,7 +29,8 @@ class Table:
     def _save_metadata(self):
         metadata = {
             'schema': self.schema,
-            'index_definitions': self.index_definitions 
+            'index_definitions': self.index_definitions,
+            'index_specs': self.index_specs
         }
         with open(self.meta_path, 'w') as f:
             json.dump(metadata, f, indent=4)
@@ -38,6 +40,7 @@ class Table:
             metadata = json.load(f)
         self.schema = metadata['schema']
         self.index_definitions = metadata.get('index_definitions', {})
+        self.index_specs = metadata.get('index_specs', [])
     
     def insert_record(self, values: List[Any]) -> int:
         packed_data = self.record_manager.pack(values)
