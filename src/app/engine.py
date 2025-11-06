@@ -1,6 +1,6 @@
 # src/app/engine.py
-from core.table import Table
-from indices.manager import IndexManager
+from src.core.table import Table
+from src.indices.manager import IndexManager
 
 from typing import Any, Dict, List, Optional, Tuple, Callable
 import io

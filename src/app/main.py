@@ -9,8 +9,8 @@ from pydantic import BaseModel
 import tempfile, os
 import re
 
-from parser.sqlparser import SQLParser     # ← aquí el cambio
-from .engine import get_engine             # ← esto está bien
+from src.parser.sqlparser import SQLParser
+from .engine import get_engine
 
 app = FastAPI(title="MiniDB")
 class SQLPayload(BaseModel):
