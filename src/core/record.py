@@ -28,7 +28,7 @@ class RecordManager:
             
             if col_type == 'VARCHAR':
                 length = self.schema[i][2]
-                encoded_value = str(value).encode('utf-8')
+                encoded_value = str(value).encode('utf-8', errors="replace")
                 packed_values.append(encoded_value.ljust(length, b'\0'))
             else:
                 packed_values.append(value)
@@ -48,6 +48,6 @@ class RecordManager:
             col_type = self.schema[i][1].upper()
             
             if col_type == 'VARCHAR':
-                unpacked_values[i] = value.strip(b'\0').decode('utf-8')
+                unpacked_values[i] = value.rstrip(b'\0').decode('utf-8', errors='replace')
                 
         return tuple(unpacked_values)

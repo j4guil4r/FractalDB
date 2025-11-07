@@ -152,7 +152,7 @@ class DatabaseEngine:
         
         print(f"Cargando datos desde '{plan['from_file']}' en '{table_name}'...")
         count = 0
-        with open(plan['from_file'], 'r', encoding='utf-8') as f:
+        with open(plan['from_file'], 'r', encoding='utf-8', errors="replace") as f:
             reader = csv.reader(f)
             header = next(reader)
             

@@ -35,7 +35,7 @@ def _cast_for_column(value: Any, col_type: str, length: int) -> Any:
     else:
         s = str(value)
     if length and len(s.encode("utf-8")) > length:
-        s = s.encode("utf-8")[:length].decode("utf-8", errors="ignore")
+        s = s.encode("utf-8")[:length].decode("utf-8", errors="replace")
     return s
 
 def _name_to_pos(schema: List[Tuple[str, str, int]]) -> Dict[str, int]:
@@ -213,10 +213,11 @@ class Engine:
     def load_csv_path(self, table: str, csv_path: str, has_header: bool = True):
         import csv as _csv
         import os
+
         if not os.path.exists(csv_path):
             raise ValueError(f"Archivo no encontrado: {csv_path}")
 
-        # A) MUESTREO NEUTRAL: inferir esquema sin hardcodear columnas
+        # 1) Leer muestra para inferir esquema (siempre tolerante)
         sample_rows = []
         columns = []
         with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
@@ -229,89 +230,47 @@ class Engine:
                 sample_rows.append(row)
                 if i >= 50_000:
                     break
+
         schema = self._infer_schema_from_rows(columns if has_header else None, sample_rows)
 
-        # Crear tabla si no existe
+        # 2) Crear o reutilizar tabla
         if table not in self.catalog:
             t = Table(table, schema=schema, data_dir=self.data_dir)
             self.catalog[table] = t
         else:
             t = self.catalog[table]
 
-        # B) COMPILAR CASTERS desde el esquema (genérico)
-        casters = self._compile_casters(schema)  # ver helper abajo
+        casters = self._compile_casters(schema)
+        rm = t.record_manager
 
-        # C) CARGA POR CHUNKS, SI HAY PANDAS/ARROW USAMOS FAST PATH; SI NO, CSV PURO
+        # 3) Cargar todo el CSV (fallback único, robusto)
         inserted = 0
-        try:
-            import pandas as pd
-            use_arrow = False
-            try:
-                import pyarrow  # noqa
-                use_arrow = True
-            except Exception:
-                pass
+        with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f, \
+            open(t.dat_path, "ab", buffering=2**20) as fout:
+            reader = _csv.reader(f)
+            if has_header:
+                _ = next(reader, None)  # saltar header real
 
-            read_opts = dict(
-                chunksize=150_000,
-                header=0 if has_header else None,
-                encoding="utf-8-sig",
-                # Truco genérico: TODO como string, sin NA parsing, luego casteas tú
-                dtype=str,
-                na_filter=False,
-                low_memory=False,
-            )
-            if use_arrow:
-                read_opts["engine"] = "pyarrow"
+            page_size = 4096
+            buf = bytearray(page_size)
+            pos = 0
 
-            rm = t.record_manager
-            with open(t.dat_path, "ab", buffering=2**20) as fout:
-                page_size = 4096
-                buf = bytearray(page_size)
-                pos = 0
-
-                for chunk in pd.read_csv(csv_path, **read_opts):
-                    # Si no había nombres (CSV sin header), inventa genéricos
-                    if not columns:
-                        columns = [f"col{i}" for i in range(len(chunk.columns))]
-                    # Alinear por posición
-                    # itertuples es el menos malo en overhead sin copiar
-                    for row in chunk.itertuples(index=False, name=None):
-                        rec_vals = self._cast_row_fast(row, casters)  # ver helper abajo
-                        rec = rm.pack(rec_vals)
-                        if pos + len(rec) > page_size:
-                            fout.write(memoryview(buf)[:pos]); pos = 0
-                        buf[pos:pos+len(rec)] = rec; pos += len(rec)
-                        inserted += 1
-                if pos:
+            for row in reader:
+                if not row:
+                    continue
+                rec_vals = self._cast_row_fast(row, casters)
+                rec = rm.pack(rec_vals)
+                if pos + len(rec) > page_size:
                     fout.write(memoryview(buf)[:pos])
+                    pos = 0
+                buf[pos:pos+len(rec)] = rec
+                pos += len(rec)
+                inserted += 1
 
-        except Exception:
-            # Fallback CSV puro, también genérico (sin nombres)
-            rm = t.record_manager
-            with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f, \
-                open(t.dat_path, "ab", buffering=2**20) as fout:
-                reader = _csv.reader(f)
-                if has_header:
-                    hdr = next(reader, None)
-                    if hdr and not columns:
-                        columns = hdr
-                page_size = 4096
-                buf = bytearray(page_size)
-                pos = 0
-                for row in reader:
-                    if not row:
-                        continue
-                    rec_vals = self._cast_row_fast(row, casters)
-                    rec = rm.pack(rec_vals)
-                    if pos + len(rec) > page_size:
-                        fout.write(memoryview(buf)[:pos]); pos = 0
-                    buf[pos:pos+len(rec)] = rec; pos += len(rec)
-                    inserted += 1
-                if pos:
-                    fout.write(memoryview(buf)[:pos])
+            if pos:
+                fout.write(memoryview(buf)[:pos])
 
-        # D) Reconstruir índices al final (una sola vez)
+        # 4) Reconstruir índices
         try:
             self.idx.rebuild_all(t)
         except Exception:
@@ -319,7 +278,9 @@ class Engine:
 
         if not columns:
             columns = [name for name, _t, _l in t.schema]
+
         return inserted, columns
+
     
     def _compile_casters(self, schema):
         casters = []
@@ -593,6 +554,7 @@ class Engine:
         header = next(reader) if has_header else None
         rows = list(reader)
         return header, rows
+
 
     def _cast_row_to_schema(self, values: List[Any], schema: List[Tuple[str, str, int]]) -> List[Any]:
         if len(values) != len(schema):
