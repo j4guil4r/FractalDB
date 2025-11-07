@@ -145,6 +145,28 @@ class IndicesE2E(unittest.TestCase):
                 # (o cámbialo a un expected failure si sabes que radius_search falta)
                 self.fail("RTREE radius_search no devolvió resultados; revisa formato de coords o impl de radius_search")
 
+    def test_rtree_cities_2d(self):
+        # mini CSV con lat/lon reales
+        csv_text = """id,name,lat,lon\n1,A,36.68,71.53\n2,B,36.681,71.531\n3,C,40.0,10.0"""
+        up = upload_csv(self.client, "cities", csv_text)
+        self.assertTrue(up["ok"])
+
+        # índice 2D
+        r = run_sql(self.client,
+            "CREATE INDEX idx_cities_geo ON cities(lat, lon) TYPE RTREE;"
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json().get("ok", False))
+
+        # consulta cerca de A/B
+        q = "SELECT * FROM cities WHERE lat, lon IN ((36.68,71.53), 0.01);"
+        r = run_sql(self.client, q)
+        self.assertEqual(r.status_code, 200, r.text)
+        res = r.json()
+        self.assertTrue(res["ok"], res)
+        ids = {int(row[0]) for row in res["rows"]}
+        # deberíamos ver 1 y 2, no 3
+        self.assertEqual(ids, {1, 2})
 
 
 if __name__ == "__main__":
