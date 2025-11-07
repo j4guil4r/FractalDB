@@ -1,8 +1,6 @@
 # src/indices/sequentialfile/sequentialfile.py
 
 import os
-import pickle
-import bisect
 from typing import List, Any, Generator, Optional, Tuple
 
 class SequentialFile:
@@ -104,7 +102,7 @@ class SequentialFile:
         
         os.replace(temp_main_path, self.main_path)
         
-        open(self.aux_path, 'w').close()
+        open(self.aux_path, 'wb').close()
         print("-> Reconstrucción completada.")
 
     def search(self, key: Any) -> List[list]:
