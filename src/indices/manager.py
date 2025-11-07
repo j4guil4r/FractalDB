@@ -181,30 +181,46 @@ class IndexManager:
             self._indexes[table.name][col] = idx
             return
 
-        # -------------------- RTREE (1 columna coords) --------------------
+        # -------------------- RTREE --------------------
         if idx_type == "RTREE":
-            if len(columns) != 1:
-                raise ValueError("RTREE (por ahora) solo soporta 1 columna en este motor.")
-            col = columns[0]
-            pos = name_to_pos[col]
+            # key_str ya es "lat,lon" o "Coord", etc.
+            idx = RTreeIndex(table.name, "_rtree_" + key_str, data_dir=table.data_dir)
 
-            idx = RTreeIndex(table.name, col, data_dir=table.data_dir)
+            # Caso 1: una sola columna con "(x,y)" o "[x,y]"
+            if len(columns) == 1:
+                col = columns[0]
+                pos = name_to_pos[col]
+                count = 0
+                for rid, values in table.scan() or []:
+                    coords = self._parse_coords(values[pos])
+                    if coords is not None:
+                        idx.add(coords, rid)
+                        count += 1
+                # guardamos bajo el nombre de la columna
+                self._indexes[table.name][key_str] = idx
+                print(f"[IndexManager RTREE] construido índice para {table.name}.{col} con {count} entradas")
+                return
 
-            count = 0
-            for rid, values in table.scan() or []:
-                raw = values[pos]
-                print(f"[RTREE build] rid={rid} raw={raw!r} type={type(raw)}")  # 🔍 DEBUG
+            # Caso 2: dos columnas numéricas lat, lon
+            if len(columns) == 2:
+                c_lat, c_lon = columns
+                p_lat, p_lon = name_to_pos[c_lat], name_to_pos[c_lon]
+                count = 0
+                for rid, values in table.scan() or []:
+                    try:
+                        lat = float(values[p_lat])
+                        lon = float(values[p_lon])
+                        idx.add((lat, lon), rid)
+                        count += 1
+                    except Exception:
+                        continue
+                # lo registramos con la clave "lat,lon"
+                self._indexes[table.name][key_str] = idx
+                print(f"[IndexManager RTREE] construido índice 2D para {table.name}.({c_lat},{c_lon}) con {count} entradas")
+                return
 
-                coords = self._parse_coords(raw)
-                print(f"[RTREE build] -> parsed={coords}")  # 🔍 DEBUG
-
-                if coords is not None and len(coords) == 2:
-                    idx.add(coords, rid)
-                    count += 1
-
-            print(f"[IndexManager RTREE] construido índice para {table.name}.{col} con {count} entradas")
-            self._indexes[table.name][col] = idx
-            return
+            # Si no es 1 o 2, no soportamos
+            raise ValueError("RTREE solo soporta 1 columna '(x,y)' o 2 columnas numéricas (lat, lon).")
 
         # -------------------- desconocido --------------------
         raise ValueError(f"Tipo de índice no soportado: {idx_type}")

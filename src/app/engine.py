@@ -436,45 +436,60 @@ class Engine:
         # Planner ultra básico: intenta usar índice antes que scan
         if cond:
             op = cond["op"]
-            field = cond["field"]
 
-            if op == "=":
-                kind, payload = self.idx.probe_eq(t.name, field, cond["value"])
-                if kind == 'records':
-                    rows = [[rec[p] for p in proj_pos] for rec in payload]
-                    idx_inst = self.idx.list_for_table(t.name).get(field, None)
-                    used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
-                if kind == 'rids':
-                    rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
-                    idx_inst = self.idx.list_for_table(t.name).get(field, None)
-                    used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+            # ----- "=" y BETWEEN e IN 1D -----
+            if op in ("=", "BETWEEN", "IN"):
+                field = cond["field"]
 
-            elif op == "BETWEEN":
-                kind, payload = self.idx.probe_between(t.name, field, cond["low"], cond["high"])
-                if kind == 'records':
-                    rows = [[rec[p] for p in proj_pos] for rec in payload]
-                    idx_inst = self.idx.list_for_table(t.name).get(field, None)
-                    used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
-                if kind == 'rids':
-                    rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
-                    idx_inst = self.idx.list_for_table(t.name).get(field, None)
-                    used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+                if op == "=":
+                    kind, payload = self.idx.probe_eq(t.name, field, cond["value"])
+                    if kind == 'records':
+                        rows = [[rec[p] for p in proj_pos] for rec in payload]
+                    elif kind == 'rids':
+                        rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
+                    else:
+                        rows = None
 
-            elif op == "IN":
-                kind, payload = self.idx.probe_rtree_radius(t.name, field, cond["coords"], cond["radius"])
-                if kind == 'rids':
-                    rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
-                    idx_inst = self.idx.list_for_table(t.name).get(field, None)
-                    used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
-            
-            elif op == "IN2":
-                synthetic = ",".join(field)
-                kind, payload = self.idx.probe_rtree_radius(t.name, synthetic, cond["coords"], cond["radius"])
+                    if rows is not None:
+                        idx_inst = self.idx.list_for_table(t.name).get(field, None)
+                        used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
+                        return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+
+                elif op == "BETWEEN":
+                    kind, payload = self.idx.probe_between(t.name, field, cond["low"], cond["high"])
+                    if kind == 'records':
+                        rows = [[rec[p] for p in proj_pos] for rec in payload]
+                    elif kind == 'rids':
+                        rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
+                    else:
+                        rows = None
+
+                    if rows is not None:
+                        idx_inst = self.idx.list_for_table(t.name).get(field, None)
+                        used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
+                        return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+
+                elif op == "IN":
+                    kind, payload = self.idx.probe_rtree_radius(
+                        t.name, field, cond["coords"], cond["radius"]
+                    )
+                    if kind == 'rids':
+                        rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
+                        idx_inst = self.idx.list_for_table(t.name).get(field, None)
+                        used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
+                        return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+
+            # ----- IN2: RTREE 2D sobre (lat,lon) -----
+            if op == "IN2":
+                fields = cond["fields"]        # ['latitude', 'longitude']
+                synthetic = ",".join(fields)   # "latitude,longitude"
+
+                kind, payload = self.idx.probe_rtree_radius(
+                    t.name,
+                    synthetic,
+                    cond["coords"],
+                    cond["radius"],
+                )
                 if kind == 'rids':
                     rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
                     idx_inst = self.idx.list_for_table(t.name).get(synthetic, None)

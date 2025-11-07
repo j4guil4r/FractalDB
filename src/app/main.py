@@ -55,11 +55,16 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
         table_name = plan.get("table_name")
         column_name = plan.get("column_name")
         index_type = plan.get("index_type")
+
+        if isinstance(column_name, list):
+            columns = column_name
+        else:
+            columns = [column_name]
         return {
             "action": "create_index",
             "index_name": index_name,
             "table": table_name,
-            "column": [column_name],
+            "column": columns,
             "index_type": index_type
         }
     
@@ -77,7 +82,13 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
             elif op == "BETWEEN":
                 cond = {"op": "BETWEEN", "field": col, "low": w.get("value1"), "high": w.get("value2")}
             elif op == "IN2":
-                cond = {"op": "IN2", "field": col, "coords": tuple(w["point"]), "radius": float(w["radius"])}
+                cols = w.get("columns", [])
+                cond = {
+                    "op": "IN2",
+                    "fields": cols,
+                    "coords": tuple(w.get("point", ())),
+                    "radius": float(w.get("radius", 0)),
+                }
             elif op == "IN":
                 cond = {"op": "IN", "field": col, "coords": tuple(w.get("point", ())), "radius": float(w.get("radius", 0))}
         return {"action": "select", "table": plan["table_name"], "columns": ["*"], "condition": cond}
