@@ -42,9 +42,6 @@ def _name_to_pos(schema: List[Tuple[str, str, int]]) -> Dict[str, int]:
     return {name: i for i, (name, _t, _l) in enumerate(schema)}
 
 def _parse_coords_from_value(val: Any) -> Optional[Tuple[float, ...]]:
-    """
-    Intenta parsear coordenadas desde lista/tupla o string "[x, y, ...]".
-    """
     if isinstance(val, (list, tuple)):
         try:
             return tuple(float(x) for x in val)
@@ -52,9 +49,9 @@ def _parse_coords_from_value(val: Any) -> Optional[Tuple[float, ...]]:
             return None
     if isinstance(val, str):
         s = val.strip()
-        if s.startswith("[") and s.endswith("]"):
-            s = s[1:-1]
-        parts = [p.strip() for p in s.split(",") if p.strip() != ""]
+        if len(s) >= 2 and ((s[0] == '(' and s[-1] == ')') or (s[0] == '[' and s[-1] == ']')):
+            s = s[1:-1].strip()
+        parts = [p.strip() for p in s.split(',') if p.strip()]
         try:
             return tuple(float(p) for p in parts)
         except Exception:
@@ -222,7 +219,7 @@ class Engine:
         # A) MUESTREO NEUTRAL: inferir esquema sin hardcodear columnas
         sample_rows = []
         columns = []
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
             reader = _csv.reader(f)
             header = next(reader, None) if has_header else None
             if has_header and not header:
@@ -292,7 +289,7 @@ class Engine:
         except Exception:
             # Fallback CSV puro, también genérico (sin nombres)
             rm = t.record_manager
-            with open(csv_path, "r", encoding="utf-8-sig", newline="") as f, \
+            with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f, \
                 open(t.dat_path, "ab", buffering=2**20) as fout:
                 reader = _csv.reader(f)
                 if has_header:
@@ -396,7 +393,7 @@ class Engine:
 
         # 1) Primera pasada: leo header + muestra para inferir
         sample_rows = []
-        with open(file_path, "r", encoding="utf-8", newline="") as f:
+        with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.reader(f)
             header = next(reader, None)
             if not header:
@@ -414,7 +411,7 @@ class Engine:
 
         # 3) Segunda pasada: inserción en streaming (sin actualizar índices por fila)
         inserted = 0
-        with open(file_path, "r", encoding="utf-8", newline="") as f:
+        with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.reader(f)
             _ = next(reader, None)  # saltar header
             for row in reader:
@@ -513,6 +510,15 @@ class Engine:
                     idx_inst = self.idx.list_for_table(t.name).get(field, None)
                     used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
                     return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+            
+            elif op == "IN2":
+                synthetic = ",".join(field)
+                kind, payload = self.idx.probe_rtree_radius(t.name, synthetic, cond["coords"], cond["radius"])
+                if kind == 'rids':
+                    rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
+                    idx_inst = self.idx.list_for_table(t.name).get(synthetic, None)
+                    used = {"column": synthetic, "type": idx_inst.__class__.__name__} if idx_inst else None
+                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
 
         # Fallback: scan con predicado (sin índice)
         pred = self._make_predicate(t.schema, cond)
@@ -527,14 +533,34 @@ class Engine:
     
     def _create_index_action(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
-        col = stmt["column"]
-        typ = stmt["index_type"].upper()
-        self.idx.create_index(t, col, typ)
-        # persiste spec
-        if (col, typ) not in getattr(t, "index_specs", []):
-            t.index_specs.append((col, typ))
+        # 👇 Normalizar a lista
+        cols = stmt.get("columns")
+        if cols is None:
+            col = stmt.get("column")
+            cols = [col] if isinstance(col, str) else (col or [])
+        elif isinstance(cols, str):
+            cols = [cols]
+
+        if not cols:
+            raise ValueError("CREATE INDEX: faltan columnas")
+
+        typ = stmt["index_type"]
+
+        # crea el índice (IndexManager ya acepta lista o 1 col)
+        self.idx.create_index(t, cols, typ)
+
+        # persistir spec SIEMPRE como ["col"] o ["lat,lon"]
+        key_str = ",".join(cols)
+
+        if not hasattr(t, "index_specs"):
+            t.index_specs = []
+        spec_item = [key_str, typ]
+        if spec_item not in t.index_specs:
+            t.index_specs.append(spec_item)
             t._save_metadata()
+
         return {"ok": True}
+
 
     def _drop_index_action(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
@@ -562,7 +588,7 @@ class Engine:
 
 
     def _read_csv_bytes(self, blob: bytes, has_header: bool):
-        f = io.StringIO(blob.decode("utf-8"))
+        f = io.StringIO(blob.decode("utf-8-sig", errors="replace"))
         reader = csv.reader(f)
         header = next(reader) if has_header else None
         rows = list(reader)

@@ -29,8 +29,13 @@ class SQLParser:
             r"CREATE INDEX (\w+) ON (\w+)\((\w+)\) TYPE (\w+)",
             re.IGNORECASE
         )
-
-
+        # RTREE con 2 columnas: CREATE INDEX idx ON tabla(col1, col2) TYPE RTREE
+        self.re_create_index_rtree = re.compile(
+            r"""CREATE\s+INDEX\s+(\w+)\s+ON\s+(\w+)\s*
+                \(\s*(\w+)\s*,\s*(\w+)\s*\)\s+
+                TYPE\s+RTREE\s*""",
+            re.IGNORECASE | re.VERBOSE
+        )
 
     def parse(self, sql: str) -> Dict[str, Any]:
         sql = sql.strip().rstrip(';')
@@ -45,6 +50,17 @@ class SQLParser:
                 'command': 'CREATE_TABLE_FROM_FILE',
                 'table_name': match.group(1),
                 'from_file': match.group(2)
+            }
+        
+        match = self.re_create_index_rtree.fullmatch(sql)
+        if match:
+            # index_name, table_name, col1, col2
+            return {
+                'command': 'CREATE_INDEX',
+                'index_name': match.group(1),
+                'table_name': match.group(2),
+                'column_name': [match.group(3), match.group(4)],
+                'index_type': 'RTREE'
             }
         
         match = self.re_create_index.fullmatch(sql)
@@ -195,6 +211,20 @@ class SQLParser:
                 'value2': self._cast_value(match.group(3))
             }
             return plan
+        
+        m = re.match(r"(\w+)\s*,\s*(\w+)\s+IN\s*\(\((.*?)\)\s*,\s*(.*?)\)", where_str, re.IGNORECASE)
+        if m:
+            point = tuple(float(p) for p in m.group(3).split(','))
+            return {
+                'command': 'SELECT',
+                'table_name': table_name,
+                'where': {
+                    'op': 'IN2',
+                    'columns': [m.group(1), m.group(2)],
+                    'point': point,
+                    'radius': float(m.group(4))
+                }
+            }
 
         match = re.match(r"(\w+) IN \(\((.*?)\),\s*(.*?)\)", where_str, re.IGNORECASE)
         if match:

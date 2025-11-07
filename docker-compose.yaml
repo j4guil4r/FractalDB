@@ -5,5 +5,5 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./src:/app  # Montamos src en /app (coincide con WORKDIR)
+      - ./src:/app/src
     restart: always

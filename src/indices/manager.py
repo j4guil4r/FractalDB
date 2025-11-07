@@ -44,24 +44,49 @@ class IndexManager:
 
     def _name_to_pos(self, schema: List[Tuple[str, str, int]]) -> Dict[str, int]:
         return {n: i for i, (n, _t, _l) in enumerate(schema)}
-
+    
+    
     @staticmethod
     def _parse_coords(val: Any):
+        """
+        Intenta parsear coordenadas 2D desde:
+          - tupla/lista: (x, y) o [x, y]
+          - string con paréntesis: "(x, y)"
+          - string con corchetes: "[x, y]"
+          - string plano: "x, y"
+        Devuelve tuple[float, float] o None.
+        """
+        # Ya viene como tupla/lista numérica
         if isinstance(val, (list, tuple)):
             try:
-                return tuple(float(x) for x in val)
+                coords = tuple(float(x) for x in val)
+                return coords if len(coords) >= 2 else None
             except Exception:
                 return None
+
+        # Si es string, limpiamos
         if isinstance(val, str):
             s = val.strip()
-            if s.startswith("[") and s.endswith("]"):
+
+            # Quitar paréntesis o corchetes exteriores
+            if (s.startswith("(") and s.endswith(")")) or (s.startswith("[") and s.endswith("]")):
                 s = s[1:-1]
-            parts = [p.strip() for p in s.split(",") if p.strip() != ""]
+
+            # Split por coma
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            if len(parts) < 2:
+                return None
+
             try:
-                return tuple(float(p) for p in parts)
+                coords = tuple(float(p) for p in parts)
+                return coords if len(coords) >= 2 else None
             except Exception:
                 return None
+
         return None
+
+
+
 
     # -------------------- API pública --------------------
 
@@ -74,40 +99,78 @@ class IndexManager:
         if (column, typ) not in specs:
             specs.append((column, typ))
 
-    def create_index(self, table, column: str, idx_type: str):
+    def create_index(self, table, columns_or_colname: Any, idx_type: str):
+        """
+        Crea un índice para una o más columnas.
+        Para tu uso actual:
+        - BTREE, EHASH(HASH), ISAM, SEQ: 1 columna.
+        - RTREE: 1 columna con coords tipo "(x, y)" o "[x, y]" o "x,y".
+        """
         idx_type = self._normalize(idx_type)
-        self.declare(table.name, column, idx_type)
+
+        # Normalizar a lista de columnas
+        if isinstance(columns_or_colname, (list, tuple)):
+            columns = list(columns_or_colname)
+        else:
+            columns = [columns_or_colname]
+
+        if not columns:
+            raise ValueError("No se especificaron columnas para el índice.")
+
+        name_to_pos = self._name_to_pos(table.schema)
+
+        # Clave canónica solo para specs (para reconstrucción futura)
+        key_str = ",".join(columns)
+        self.declare(table.name, key_str, idx_type)
 
         if table.name not in self._indexes:
             self._indexes[table.name] = {}
 
-        pos = self._name_to_pos(table.schema)[column]
-
+        # -------------------- EHASH (HASH) --------------------
         if idx_type == "EHASH":
-            idx = EHHashIndex(table.name, column, data_dir=table.data_dir)
+            if len(columns) != 1:
+                raise ValueError("HASH solo soporta 1 columna.")
+            col = columns[0]
+            pos = name_to_pos[col]
+            idx = EHHashIndex(table.name, col, data_dir=table.data_dir)
             for rid, values in table.scan() or []:
                 idx.add(values[pos], rid)
-            self._indexes[table.name][column] = idx
+            # clave = nombre de columna (para probe_eq)
+            self._indexes[table.name][col] = idx
             return
 
+        # -------------------- BTREE --------------------
         if idx_type == "BTREE":
-            idx = BPlusTreeIndex(table.name, column, data_dir=table.data_dir)
+            if len(columns) != 1:
+                raise ValueError("BTREE solo soporta 1 columna.")
+            col = columns[0]
+            pos = name_to_pos[col]
+            idx = BPlusTreeIndex(table.name, col, data_dir=table.data_dir)
             for rid, values in table.scan() or []:
                 idx.add(values[pos], rid)
             if hasattr(idx, "persist"):
                 idx.persist()
-            self._indexes[table.name][column] = idx
+            self._indexes[table.name][col] = idx
             return
 
+        # -------------------- ISAM --------------------
         if idx_type == "ISAM":
-            idx = ISAMIndex.build_from_table(table, column)
-            self._indexes[table.name][column] = idx
+            if len(columns) != 1:
+                raise ValueError("ISAM solo soporta 1 columna.")
+            col = columns[0]
+            idx = ISAMIndex.build_from_table(table, col)
+            self._indexes[table.name][col] = idx
             return
 
+        # -------------------- SEQ --------------------
         if idx_type == "SEQ":
+            if len(columns) != 1:
+                raise ValueError("SEQ solo soporta 1 columna.")
+            col = columns[0]
+            pos = name_to_pos[col]
             idx = SequentialFileIndex(
                 table_name=table.name,
-                column_name=column,
+                column_name=col,
                 record_manager=table.record_manager,
                 key_column_index=pos,
                 data_dir=table.data_dir,
@@ -115,19 +178,38 @@ class IndexManager:
             )
             for _rid, values in table.scan() or []:
                 idx.add(values[pos], list(values))
-            self._indexes[table.name][column] = idx
+            self._indexes[table.name][col] = idx
             return
 
+        # -------------------- RTREE (1 columna coords) --------------------
         if idx_type == "RTREE":
-            idx = RTreeIndex(table.name, column, data_dir=table.data_dir)
+            if len(columns) != 1:
+                raise ValueError("RTREE (por ahora) solo soporta 1 columna en este motor.")
+            col = columns[0]
+            pos = name_to_pos[col]
+
+            idx = RTreeIndex(table.name, col, data_dir=table.data_dir)
+
+            count = 0
             for rid, values in table.scan() or []:
-                coords = self._parse_coords(values[pos])
-                if coords is not None:
+                raw = values[pos]
+                print(f"[RTREE build] rid={rid} raw={raw!r} type={type(raw)}")  # 🔍 DEBUG
+
+                coords = self._parse_coords(raw)
+                print(f"[RTREE build] -> parsed={coords}")  # 🔍 DEBUG
+
+                if coords is not None and len(coords) == 2:
                     idx.add(coords, rid)
-            self._indexes[table.name][column] = idx
+                    count += 1
+
+            print(f"[IndexManager RTREE] construido índice para {table.name}.{col} con {count} entradas")
+            self._indexes[table.name][col] = idx
             return
 
+        # -------------------- desconocido --------------------
         raise ValueError(f"Tipo de índice no soportado: {idx_type}")
+
+
 
     def drop_index(self, table, column: str):
         if table.name in self._indexes:
@@ -149,7 +231,8 @@ class IndexManager:
         # limpia el mapa en memoria y re-crea cada índice
         self._indexes[table.name] = {}
         for col, typ in specs:
-            self.create_index(table, col, typ)
+            cols = col.split(",") if isinstance(col, str) and "," in col else col
+            self.create_index(table, cols, typ)
 
     def on_insert(self, table, rid: int, values: List[Any]) -> None:
         """Actualiza todos los índices con el nuevo registro."""
@@ -157,17 +240,28 @@ class IndexManager:
         if not idxs:
             return
         name_pos = self._name_to_pos(table.schema)
-        for col, idx in idxs.items():
-            p = name_pos[col]
+        
+        for key_str, idx in idxs.items():
+            cols = key_str.split(",")  # 1 o 2 columnas
             if isinstance(idx, SequentialFileIndex):
+                p = name_pos[cols[0]]
                 idx.add(values[p], list(values))
             elif isinstance(idx, RTreeIndex):
-                coords = self._parse_coords(values[p])
-                if coords is not None:
-                    idx.add(coords, rid)
+                if len(cols) == 1:
+                    p = name_pos[cols[0]]
+                    coords = self._parse_coords(values[p])
+                    if coords is not None:
+                        idx.add(coords, rid)
+                else:
+                    p0, p1 = name_pos[cols[0]], name_pos[cols[1]]
+                    try:
+                        lat = float(values[p0]); lon = float(values[p1])
+                        idx.add((lat, lon), rid)
+                    except Exception:
+                        pass
             else:
+                p = name_pos[cols[0]]
                 idx.add(values[p], rid)
-
     # -------------------- probes para el planner --------------------
 
     def probe_eq(self, table_name: str, column: str, value: Any):
@@ -191,8 +285,18 @@ class IndexManager:
         return 'rids', res
 
     def probe_rtree_radius(self, table_name: str, column: str, coords: List[float], radius: float):
-        idx = self._indexes.get(table_name, {}).get(column)
+        tmap = self._indexes.get(table_name, {})
+        idx = tmap.get(column)
+
+        # fallback: si no está con ese nombre, usar el primer RTREE disponible
+        if not isinstance(idx, RTreeIndex):
+            for key, cand in tmap.items():
+                if isinstance(cand, RTreeIndex):
+                    idx = cand
+                    break
+
         if not isinstance(idx, RTreeIndex):
             return None, None
+
         rids = idx.radius_search(tuple(coords), float(radius))
         return 'rids', rids

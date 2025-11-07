@@ -119,7 +119,7 @@ class IndicesE2E(unittest.TestCase):
 
     def test_rtree(self):
         # Usa tuplas "(x, y)" mejor que "[x, y]"
-        csv_text = "Id,Coord\n1,(10, 10)\n2,(15, 15)\n3,(30, 30)\n"
+        csv_text = 'Id,Coord\n1,"(10, 10)"\n2,"(15, 15)"\n3,"(30, 30)"\n'
         up = upload_csv(self.client, "t_rtree", csv_text)
         self.assertTrue(up["ok"]); self.assertEqual(up["inserted"], 3)
 
@@ -133,16 +133,17 @@ class IndicesE2E(unittest.TestCase):
             r = run_sql(self.client, q)
             self.assertEqual(r.status_code, 200, r.text)
             sel = r.json()
+            print("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", sel)
             self.assertTrue(sel["ok"], sel)
 
             ids = {int(row[0]) for row in sel["rows"]}
             if ids:  # si devolvió algo, validamos lo esperado y salimos
                 self.assertEqual(ids, {1, 2}, f"radius={radius}, rows={sel['rows']}")
                 break
-        else:
-            # Si ninguno de los radios devolvió filas, marca el test como fallido
-            # (o cámbialo a un expected failure si sabes que radius_search falta)
-            self.fail("RTREE radius_search no devolvió resultados; revisa formato de coords o impl de radius_search")
+            else:
+                # Si ninguno de los radios devolvió filas, marca el test como fallido
+                # (o cámbialo a un expected failure si sabes que radius_search falta)
+                self.fail("RTREE radius_search no devolvió resultados; revisa formato de coords o impl de radius_search")
 
 
 
