@@ -239,10 +239,16 @@ class SQLParser:
 
         match = re.match(r"(\w+)\s*=\s*(.*)", where_str, re.IGNORECASE)
         if match:
+            column = match.group(1)
+            value = match.group(2).strip()
+
+            if not (value.startswith("'") and value.endswith("'")):
+                value = f"'{value}'"
+
             plan['where'] = {
-                'column': match.group(1),
+                'column': column,
                 'op': '=',
-                'value': self._cast_value(match.group(2))
+                'value': self._cast_value(value)
             }
             return plan
 

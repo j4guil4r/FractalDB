@@ -8,6 +8,7 @@ from .hashing.hashingindex import HashIndex as EHHashIndex
 from .isam.isamindex import ISAMIndex
 from .rtree.rtreeindex import RTreeIndex
 from .sequentialfile.sequentialfileindex import SequentialFileIndex
+from src.core.table import Table
 
 
 class IndexManager:
@@ -99,13 +100,7 @@ class IndexManager:
         if (column, typ) not in specs:
             specs.append((column, typ))
 
-    def create_index(self, table, columns_or_colname: Any, idx_type: str):
-        """
-        Crea un índice para una o más columnas.
-        Para tu uso actual:
-        - BTREE, EHASH(HASH), ISAM, SEQ: 1 columna.
-        - RTREE: 1 columna con coords tipo "(x, y)" o "[x, y]" o "x,y".
-        """
+    def create_index(self, table: Table, columns_or_colname: Any, idx_type: str):
         idx_type = self._normalize(idx_type)
 
         # Normalizar a lista de columnas
@@ -227,7 +222,7 @@ class IndexManager:
 
 
 
-    def drop_index(self, table, column: str):
+    def drop_index(self, table: Table, column: str):
         if table.name in self._indexes:
             self._indexes[table.name].pop(column, None)
             if not self._indexes[table.name]:
@@ -237,7 +232,7 @@ class IndexManager:
         self._specs[table.name] = [(c, t) for (c, t) in specs if c != column]
         # TODO: borrar archivos persistidos del índice si aplica
 
-    def rebuild_all(self, table) -> None:
+    def rebuild_all(self, table: Table) -> None:
         """Reconstruye todos los índices declarados para la tabla desde cero."""
         specs = self._specs.get(table.name) or getattr(table, "index_specs", [])
         if not specs:
@@ -250,7 +245,7 @@ class IndexManager:
             cols = col.split(",") if isinstance(col, str) and "," in col else col
             self.create_index(table, cols, typ)
 
-    def on_insert(self, table, rid: int, values: List[Any]) -> None:
+    def on_insert(self, table: Table, rid: int, values: List[Any]) -> None:
         """Actualiza todos los índices con el nuevo registro."""
         idxs = self._indexes.get(table.name)
         if not idxs:

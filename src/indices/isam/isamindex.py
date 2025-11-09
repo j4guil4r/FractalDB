@@ -4,6 +4,7 @@ import os
 from typing import List, Any
 from ..base_index import BaseIndex
 from .isam import ISAM
+from src.core.table import Table
 
 class ISAMIndex(BaseIndex):
     """
@@ -34,7 +35,7 @@ class ISAMIndex(BaseIndex):
                         pass
 
     @staticmethod
-    def build_from_table(table, column_name: str, index_capacity=4, data_capacity=4):
+    def build_from_table(table: Table, column_name: str, index_capacity=4, data_capacity=4):
         """
         Construye el índice desde la tabla (scan + sort).
         Siempre crea idx2/idx1/dat incluso si no hay registros.
