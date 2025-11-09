@@ -1,18 +1,16 @@
 # src/app/main.py
-
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 import tempfile, os
-import re
+import re, time
 
 from src.parser.sqlparser import SQLParser
 from .engine import get_engine
 
-app = FastAPI(title="MiniDB")
+app = FastAPI(title="FractalDB")
 class SQLPayload(BaseModel):
     query: str
 
@@ -121,6 +119,7 @@ def home():
 async def run_sql(payload: SQLPayload):
     q = payload.query.strip()
     try:
+        start_time = time.time()
         statements = [s.strip() for s in _STMT_SPLIT.split(q) if s.strip()]
         results = []
         for s in statements:
@@ -128,8 +127,15 @@ async def run_sql(payload: SQLPayload):
             plan_engine = _adapt_plan_for_engine(plan_parser)
             results.append({"sql": s, "result": get_engine().execute(plan_engine)})
 
-        # Si solo hubo una, devuelvo directamente el resultado (para que tu UI muestre la tabla)
-        return results[0]["result"] if len(results) == 1 else {"ok": True, "results": results}
+        end_time = time.time()
+        execution_time = end_time - start_time
+
+        response = {
+            "results": results[0]["result"] if len(results) == 1 else {"ok": True, "results": results},
+            "execution_time": execution_time
+        }
+        return response
+
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Error al procesar SQL aaaa: {ve}")
     except Exception as e:

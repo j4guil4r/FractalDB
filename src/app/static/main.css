@@ -1,4 +1,4 @@
-/* ===== MiniDB · Neo-Data Theme (para el HTML entregado) ===== */
+/* ===== FractalDB · Neo-Data Theme (para el HTML entregado) ===== */
 :root{
   --bg:#0b0f14;
   --panel:#0f1620;
@@ -127,6 +127,16 @@ button:active{transform:translateY(1px)}
   background: rgba(0,229,255,.08); border:1px solid rgba(0,229,255,.25); color:#9feaff;
   box-shadow: inset 0 0 12px rgba(0,229,255,.08);
 }
+
+#executionTime {
+    font-size: 14px;
+    color: #9feaff;
+    background-color: rgba(0, 229, 255, 0.1);
+    padding: 5px 10px;
+    border-radius: 5px;
+    margin-top: 10px;
+}
+
 
 /* Tabla */
 table{

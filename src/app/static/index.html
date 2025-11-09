@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>MiniDB</title>
+  <title>FractalDB</title>
   <link rel="stylesheet" href="/static/main.css">
   <style>
     /* Mini CSS para dropzone, chips y modal. Respeta tu theme. */
@@ -46,7 +46,7 @@
 <body>
   <div class="container">
     <header class="header">
-      <h1>MiniDB</h1>
+      <h1>FractalDB</h1>
       <p class="sub"><small>in-memory catalog • indexed access • query plan executor</small></p>
     </header>
 
@@ -108,12 +108,13 @@
       <div style="margin-top:10px;">
         <button id="runBtn">Ejecutar</button>
       </div>
+      <div id="executionTime" style="margin-top:10px;"></div>
 
       <div id="out" style="margin-top:12px;"></div>
     </section>
 
     <footer style="margin:28px 0 6px; color:#8aa0b3; font-size:12px;">
-      <span>▦ MiniDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE</span>
+      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE</span>
     </footer>
   </div>
 
@@ -175,6 +176,7 @@
     async function runSQL() {
       const query = $('#sql').value;
       const out = $('#out');
+      const executionTimeContainer = $('#executionTime');
       try {
         const res = await fetch('/api/sql', {
           method: 'POST', headers: {'Content-Type':'application/json'},
@@ -183,14 +185,31 @@
         let data; try { data = await res.json(); } catch { data = await res.text(); }
         if (!res.ok) return showError(typeof data === 'string' ? data : data.detail || 'Error');
 
-        if (data.rows && data.columns) {
-          const idx = data.used_index ? `<p><small>Usó índice: ${data.used_index.type} en ${data.used_index.column}</small></p>` : '';
-          out.innerHTML = idx + renderTable(data.columns, data.rows);
-        } else {
-          out.innerHTML = show(data);
+          // Mostrar el tiempo de ejecución
+        if (data.execution_time) {
+            executionTimeContainer.innerHTML = `Tiempo de ejecución: ${data.execution_time.toFixed(4)} segundos`;
+        }
+
+        if (data.results) {
+          if (data.results.rows && data.results.columns) {
+            const idx = data.results.used_index ? `<p><small>Usó índice: ${data.results.used_index.type} en ${data.results.used_index.column}</small></p>` : '';
+                
+            const totalRows = data.results.rows.length;
+            const limit = 150;
+            const rowsToDisplay = totalRows > limit ? data.results.rows.slice(0, limit) : data.results.rows;
+            const totalRowsText = totalRows > limit ? `<p>Total de registros retornados: ${totalRows}</p>` : '';
+
+            out.innerHTML = idx + totalRowsText + renderTable(data.results.columns, rowsToDisplay);
+          } 
+          else {
+                out.innerHTML = show(data.results);
+          }
+        } 
+        else {
+            out.innerHTML = show(data);
         }
       } catch (e) { showError('Network/JS error: ' + e); }
-    }
+  }
 
     async function uploadCSV() {
       const table = $('#tableName').value.trim();
@@ -363,7 +382,7 @@
             modalNote.textContent = `Mostrando ${MAX} de ${rows.length} filas (cap en cliente).`;
           }
         } else {
-          modalBody.innerHTML = show(data);
+          modalBody.innerHTML = show(data.results.columns);
         }
       } catch (e) {
         modalBody.innerHTML = `<pre style="color:#ff4d6d">Network/JS error: ${e}</pre>`;
