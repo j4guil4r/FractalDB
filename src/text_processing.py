@@ -6,16 +6,22 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem.snowball import SnowballStemmer
 from typing import List
+import unicodedata 
 
 STEMMER = SnowballStemmer('spanish')
 STOP_WORDS = set(stopwords.words('spanish'))
 
 
 def preprocess_text(text: str) -> List[str]:
-    
-    # 1. Convertir a minúsculas
+
     text = text.lower()
     
+    try:
+        nfkd_form = unicodedata.normalize('NFKD', text)
+        text = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+    except Exception as e:
+        print(f"Advertencia: Falló la normalización de unicodedata: {e}")
+        pass 
     tokens = word_tokenize(text, language='spanish')
     
     processed_tokens = []

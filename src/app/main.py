@@ -159,12 +159,8 @@ async def run_sql(payload: SQLPayload):
             
             plan_parser = await run_in_threadpool(_parser.parse, s)
 
-            # --- INICIO DE LA SOLUCIÓN ---
-            # Esta es la línea corregida.
-            # Verificamos que 'where' no sea None ANTES de intentar acceder a 'op'
             where_clause = plan_parser.get("where")
             if where_clause and where_clause.get("op") == "MM_SIM":
-            # --- FIN DE LA SOLUCIÓN ---
                 raise ValueError("Las consultas de similitud (<->) deben hacerse "
                                  "cargando una imagen de consulta en la sección "
                                  "'Consulta Multimedia'.")
@@ -185,7 +181,6 @@ async def run_sql(payload: SQLPayload):
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {ve}")
     except Exception as e:
-        # Aquí es donde se captura el 'NoneType' object has no attribute 'get'
         raise HTTPException(status_code=500, detail=f"Error de servidor: {e}")
 
 @app.post("/api/sql_mm_query")

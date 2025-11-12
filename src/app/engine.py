@@ -113,7 +113,6 @@ class Engine:
 
         self.knn_seq_search.clear()
 
-    # --- Volvemos a tu _infer_schema_from_rows original (P1) ---
     def _infer_schema_from_rows(self, header, rows, scan_cap=50000):
         if header:
             names = header
@@ -567,8 +566,8 @@ class Engine:
         cols = stmt.get("columns", ["*"])
         cond = stmt.get("condition")
         
-        # --- ESTA ES LA CORRECCIÓN CLAVE #2 ---
-        limit_k = stmt.get("limit") or 100 # <--- 'or 100' maneja el 'None'
+        # --- ESTA ES LA CORRECCIÓN ---
+        limit_k = stmt.get("limit") or 100 
         # --- FIN DE LA CORRECCIÓN ---
         
         name_pos = _name_to_pos(t.schema)
@@ -678,7 +677,7 @@ class Engine:
         rows: List[List[Any]] = []
         count = 0
         for _rid, row_tuple in t.scan() or []:
-            if count >= limit_k: # <--- El bug 'int' >= 'NoneType' ocurría aquí si limit_k era None
+            if count >= limit_k: 
                 break
             row = list(row_tuple)
             if pred(row):
@@ -753,7 +752,6 @@ class Engine:
         if cond is None:
             return lambda row: True
         
-        # --- MODIFICADO (P2): Mover esto *después* del check de None ---
         name_pos = _name_to_pos(schema)
         op = cond["op"]
         
