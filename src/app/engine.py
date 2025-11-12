@@ -573,29 +573,22 @@ class Engine:
         cols = stmt.get("columns", ["*"])
         cond = stmt.get("condition")
         
-        # --- ESTA ES LA CORRECCIÓN ---
         limit_k = stmt.get("limit") or 100 
-        # --- FIN DE LA CORRECCIÓN ---
         
         name_pos = _name_to_pos(t.schema)
-
         if cols == ["*"]:
             proj_pos = list(range(len(t.schema)))
             proj_names = [n for n, _t, _l in t.schema]
         else:
             proj_pos = [name_pos[c] for c in cols]
             proj_names = cols
-
         if cond:
             op = cond["op"]
-
             if op == "MM_SIM":
                 if not self.mm_query_modules:
                     return {"ok": False, "rows": [], "columns": [], "error": "Índice MM no encontrado. Use CREATE MM INDEX ON ..."}
-                
                 k_from_query = cond.get("k") 
                 query_module = None
-                
                 if k_from_query:
                     query_module = self.mm_query_modules.get(k_from_query)
                     if not query_module:
@@ -604,18 +597,18 @@ class Engine:
                     if not self.mm_query_modules:
                          return {"ok": False, "error": "No hay índices MM cargados."}
                     query_module = list(self.mm_query_modules.values())[0]
-                
                 k_used = query_module.k
                 query_path = cond["query_path"]
-                
                 if not os.path.exists(query_path):
                      return {"ok": False, "error": f"Archivo de consulta no encontrado: {query_path}"}
-
-                results = query_module.query_by_path(query_path, k=limit_k)
+                
+                # --- INICIO DE LA SOLUCIÓN (TypeError) ---
+                # El argumento se llama 'top_k', no 'k'
+                results = query_module.query_by_path(query_path, top_k=limit_k)
+                # --- FIN DE LA SOLUCIÓN (TypeError) ---
                 
                 rows = []
                 final_columns = ["score"] + proj_names
-                
                 for score, rid in results:
                     try:
                         record_tuple = t.get_record(rid)
@@ -623,7 +616,6 @@ class Engine:
                         rows.append(["{:.6f}".format(score)] + projected_row)
                     except (IOError, IndexError):
                         continue
-                        
                 return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": f"MM_BOVW_INV (K={k_used})", "column": cond["field"]}}
 
             if op == "FTS":
