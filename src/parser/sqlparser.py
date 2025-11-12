@@ -209,6 +209,7 @@ class SQLParser:
         plan['values'] = [self._cast_value(p) for p in parts]
         return plan
 
+    # --- MÉTODO _parse_select MODIFICADO (SOLUCIÓN 3) ---
     def _parse_select(self, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
         plan = {
             'command': 'SELECT',
@@ -219,15 +220,23 @@ class SQLParser:
         if not where_str:
             return plan
 
-        # --- NUEVO: Parseo de MM Similitud (<->) ---
-        match_mm = re.match(r"(\w+)\s*<->\s*'(.*?)'", where_str, re.IGNORECASE)
+        # --- INICIO DE LA SOLUCIÓN ---
+        # Modificar regex para capturar opcionalmente 'USING K=...'
+        match_mm = re.match(
+            r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?", 
+            where_str, 
+            re.IGNORECASE
+        )
         if match_mm:
+            k_value = match_mm.group(3)
             plan['where'] = {
                 'column': match_mm.group(1),
                 'op': 'MM_SIM', # Nuevo operador Multimedia Similarity
-                'query_path': match_mm.group(2)
+                'query_path': match_mm.group(2),
+                'k': int(k_value) if k_value else None # Añadir K al plan
             }
             return plan
+        # --- FIN DE LA SOLUCIÓN ---
 
         match_fts = re.match(r"(\w+)\s*@@\s*'(.*?)'", where_str, re.IGNORECASE | re.DOTALL)
         if match_fts:

@@ -8,7 +8,8 @@ import csv
 import os
 import re
 import time
-import glob # <--- NUEVO
+import glob 
+import numpy as np # <-- Asegurarse que numpy esté importado
 
 # --- NUEVOS IMPORTS FTS ---
 from src.indices.inverted_index.builder import InvertedIndexBuilder
@@ -358,6 +359,7 @@ class Engine:
         self.idx.on_insert(t, rid, values)
         return {"ok": True}
 
+    # --- MÉTODO _delete MODIFICADO (SOLUCIÓN 1) ---
     def _delete(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
         pred = self._make_predicate(t.schema, stmt.get("condition"))
@@ -371,8 +373,44 @@ class Engine:
             else:
                 kept.append(row)
 
+        # 1. Reescribir el archivo .dat (esto cambia todos los RIDs)
         self._rewrite_table_file(t, kept)
+        
+        # 2. Reconstruir todos los índices estándar (BTree, Hash, RTree, ISAM, etc.)
         self.idx.rebuild_all(t)
+        
+        # --- INICIO DE LA SOLUCIÓN ---
+        # 3. Reconstruir índices FTS y MM si existen
+        print(f"DELETE: Reconstruyendo índices especiales para {t.name}...")
+        specs_to_rebuild = getattr(t, "index_specs", [])
+        
+        for col_key, idx_type in specs_to_rebuild:
+            
+            # --- Reconstruir FTS ---
+            if idx_type == "FTS":
+                print(f"  -> Reconstruyendo índice FTS en columnas: {col_key}")
+                columns = col_key.split(",")
+                try:
+                    doc_iterator = self._make_doc_iterator(t, columns)
+                    builder = InvertedIndexBuilder(data_dir=self.data_dir)
+                    builder.build(doc_iterator)
+                except Exception as e:
+                    print(f"  -> ERROR al reconstruir FTS: {e}")
+
+            # --- Reconstruir MM ---
+            elif idx_type.startswith("MM_BOVW_K"):
+                print(f"  -> Reconstruyendo índice {idx_type} en columna: {col_key}")
+                try:
+                    k = int(idx_type.split("=")[1])
+                    column_name = col_key
+                    self._rebuild_mm_index_internal(t, column_name, k)
+                except Exception as e:
+                    print(f"  -> ERROR al reconstruir MM: {e}")
+        
+        # 4. Recargar todos los módulos de consulta (FTS y MM)
+        self._load_query_modules()
+        # --- FIN DE LA SOLUCIÓN ---
+
         return {"ok": True, "deleted": deleted}
 
     def _make_doc_iterator(self, t: Table, text_columns: List[str]) -> Iterator[Tuple[int, str]]:
@@ -385,10 +423,13 @@ class Engine:
             
         print(f"Iterador FTS: Concatenando columnas en posiciones: {pos_to_concat}")
 
+        # --- MODIFICADO ---
+        # Usar t.scan() que ahora es fiable después de la reescritura de _delete
         for rid, row_tuple in t.scan() or []:
             full_text = " ".join(str(row_tuple[p]) for p in pos_to_concat)
             yield (rid, full_text)
 
+    # --- MÉTODO _create_fts_index MODIFICADO (SOLUCIÓN 1) ---
     def _create_fts_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         table_name = stmt["table"]
         columns = stmt["columns"]
@@ -404,6 +445,17 @@ class Engine:
         end_time = time.time()
         
         total_docs = builder.total_docs
+        
+        # --- INICIO DE LA SOLUCIÓN ---
+        # Guardar la especificación del índice en los metadatos de la tabla
+        spec_key = ",".join(columns)
+        spec_type = "FTS"
+        if not hasattr(t, "index_specs"): t.index_specs = []
+        # Evitar duplicados
+        if (spec_key, spec_type) not in t.index_specs:
+            t.index_specs.append((spec_key, spec_type))
+            t._save_metadata()
+        # --- FIN DE LA SOLUCIÓN ---
         
         self._load_query_modules() # Recargar todos los módulos
         
@@ -427,39 +479,36 @@ class Engine:
             
         print(f"Iterador MM: Leyendo rutas de imagen desde la columna '{img_col_name}' (pos {pos})")
 
+        # --- MODIFICADO ---
+        # Usar t.scan() que ahora es fiable después de la reescritura de _delete
         for rid, row_tuple in t.scan() or []:
             path = str(row_tuple[pos])
             # Validar que la ruta sea una ruta de archivo razonable
             if path and (path.endswith('.jpg') or path.endswith('.png') or path.endswith('.jpeg')):
                 yield (rid, path)
 
-    # --- NUEVO: Acción para crear MM INDEX ---
-    def _create_mm_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = stmt["table"]
-        column_name = stmt["column"]
-        k = stmt["k"]
-        
-        print(f"Iniciando construcción de MM INDEX (BoVW K={k}) para {table_name} en columna: {column_name}")
-        t = self._get_table(table_name)
-        start_time = time.time()
-
-        # --- Pipeline completo de BoVW ---
-        
+    # --- NUEVO: Helper interno para reconstruir MM ---
+    def _rebuild_mm_index_internal(self, t: Table, column_name: str, k: int):
+        """
+        Lógica interna para (re)construir un índice MM.
+        Llamado por _create_mm_index y _delete.
+        """
         # 1. Crear iterador de rutas de imagen
-        print("Paso 1/4: Escaneando rutas de imágenes...")
+        print(f"Paso 1/3 (Rebuild): Escaneando rutas de imágenes para K={k}...")
         image_paths_tuples = list(self._make_image_iterator(t, column_name))
         image_paths_only = [path for _rid, path in image_paths_tuples]
         
         if not image_paths_only:
-            raise ValueError("No se encontraron rutas de imagen válidas (.jpg, .png) en la columna especificada.")
+            print(f"Advertencia: No se encontraron rutas de imagen válidas para K={k}. El índice estará vacío.")
+            # Continuamos para crear archivos vacíos y evitar errores de FileNotPound
 
         # 2. Construir el Codebook (K-Means)
-        print(f"Paso 2/4: Construyendo Codebook (K={k})...")
+        print(f"Paso 2/3 (Rebuild): Construyendo Codebook (K={k})...")
         cb = CodebookBuilder(k, self.data_dir)
         cb.build_from_paths(image_paths_only) # Entrena K-Means
         
         # 3. Construir el Índice Invertido MM (SPIMI)
-        print("Paso 3/4: Construyendo Índice Invertido MM...")
+        print(f"Paso 3/3 (Rebuild): Construyendo Índice Invertido MM (K={k})...")
         hist_builder = BoVWHistogramBuilder(k, self.data_dir)
         mm_idx_builder = MMInvertedIndexBuilder(self.data_dir, k_clusters=k)
         
@@ -472,8 +521,33 @@ class Engine:
                     yield (rid, hist_tf)
         
         mm_idx_builder.build(hist_generator())
+        return mm_idx_builder.total_docs
+
+    # --- MÉTODO _create_mm_index MODIFICADO (SOLUCIÓN 1) ---
+    def _create_mm_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
+        table_name = stmt["table"]
+        column_name = stmt["column"]
+        k = stmt["k"]
         
-        # 4. Recargar módulos de consulta
+        print(f"Iniciando construcción de MM INDEX (BoVW K={k}) para {table_name} en columna: {column_name}")
+        t = self._get_table(table_name)
+        start_time = time.time()
+
+        # --- Pipeline completo de BoVW (ahora en helper) ---
+        total_docs = self._rebuild_mm_index_internal(t, column_name, k)
+        
+        # --- INICIO DE LA SOLUCIÓN ---
+        # Guardar la especificación del índice en los metadatos de la tabla
+        spec_key = column_name
+        spec_type = f"MM_BOVW_K={k}"
+        if not hasattr(t, "index_specs"): t.index_specs = []
+        # Evitar duplicados
+        if (spec_key, spec_type) not in t.index_specs:
+            t.index_specs.append((spec_key, spec_type))
+            t._save_metadata()
+        # --- FIN DE LA SOLUCIÓN ---
+        
+        # Recargar módulos de consulta
         print("Paso 4/4: Recargando módulos de consulta.")
         self._load_query_modules()
         
@@ -482,11 +556,12 @@ class Engine:
         return {
             "ok": True,
             "message": f"Índice Multimedia (BoVW K={k}) construido exitosamente.",
-            "total_images_indexed": mm_idx_builder.total_docs,
+            "total_images_indexed": total_docs,
             "codebook_size": k,
             "time_taken_sec": (end_time - start_time)
         }
 
+    # --- MÉTODO _select MODIFICADO (SOLUCIÓN 3) ---
     def _select(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
         cols = stmt.get("columns", ["*"])
@@ -504,18 +579,28 @@ class Engine:
         if cond:
             op = cond["op"]
 
-            # --- NUEVA LÓGICA MM_SIM ---
+            # --- LÓGICA MM_SIM MODIFICADA (SOLUCIÓN 3) ---
             if op == "MM_SIM":
                 if not self.mm_query_modules:
                     return {"ok": False, "rows": [], "columns": [], "error": "Índice MM no encontrado. Use CREATE MM INDEX ON ..."}
                 
-                # Por ahora, usamos el primer módulo MM cargado.
-                # En una versión avanzada, se podría seleccionar por 'k'
-                if not self.mm_query_modules:
-                     return {"ok": False, "error": "No hay índices MM cargados."}
+                # --- INICIO DE LA SOLUCIÓN ---
+                k_from_query = cond.get("k") # k puede ser None
+                query_module = None
                 
-                query_module = list(self.mm_query_modules.values())[0]
+                if k_from_query:
+                    # El usuario especificó un K
+                    query_module = self.mm_query_modules.get(k_from_query)
+                    if not query_module:
+                        return {"ok": False, "error": f"Índice MM con K={k_from_query} no encontrado o no cargado."}
+                else:
+                    # El usuario no especificó K, usar el primero disponible
+                    if not self.mm_query_modules:
+                         return {"ok": False, "error": "No hay índices MM cargados."}
+                    query_module = list(self.mm_query_modules.values())[0]
+                
                 k_used = query_module.k
+                # --- FIN DE LA SOLUCIÓN ---
                 
                 query_path = cond["query_path"]
                 
@@ -641,8 +726,11 @@ class Engine:
                 t = Table(name, data_dir=self.data_dir)
                 self.catalog[name] = t
                 # reconstruir índices declarados en metadata
+                # --- MODIFICADO (SOLUCIÓN 1) ---
+                # No reconstruir FTS/MM aquí, solo índices estándar
                 for col, typ in getattr(t, "index_specs", []):
-                    if typ.upper() == "FTS": continue
+                    if typ.upper() == "FTS" or typ.upper().startswith("MM_BOVW"):
+                        continue # Se cargan en _load_query_modules
                     cols_list = col.split(',')
                     self.idx.create_index(t, cols_list, typ)
             else:

@@ -12,6 +12,11 @@ from src.text_processing import preprocess_text
 class InvertedIndexQuery:
     
     def __init__(self, data_dir: str = 'data'):
+        # --- INICIO DE LA SOLUCIÓN ---
+        # Pre-declarar index_file como None para que __del__ siempre funcione
+        self.index_file = None
+        # --- FIN DE LA SOLUCIÓN ---
+        
         self.final_index_path = os.path.join(data_dir, "inverted_index.dat")
         self.final_meta_path = os.path.join(data_dir, "inverted_index.meta")
         
@@ -67,7 +72,10 @@ class InvertedIndexQuery:
 
     def close(self):
         """Cierra el archivo de índice."""
-        if self.index_file:
+        # --- MODIFICADO ---
+        # Chequeo más robusto
+        if hasattr(self, 'index_file') and self.index_file:
+        # --- FIN MODIFICADO ---
             self.index_file.close()
             print("Módulo de consulta: Archivo de índice cerrado.")
 
