@@ -8,9 +8,7 @@ import tempfile, os
 import re, time
 from typing import Dict, Any 
 
-# --- INICIO DE LA SOLUCIÓN 4 ---
 from fastapi.concurrency import run_in_threadpool
-# --- FIN DE LA SOLUCIÓN 4 ---
 
 from src.parser.sqlparser import SQLParser
 from .engine import get_engine
@@ -67,7 +65,7 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
             "action": "create_index",
             "index_name": index_name,
             "table": table_name,
-            "column": columns, # 'column' es ahora una lista
+            "column": columns, 
             "index_type": index_type
         }
     
@@ -116,16 +114,21 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
                     "op": "MM_SIM", 
                     "field": col, 
                     "query_path": w.get("query_path"),
-                    "k": w.get("k") # Pasar el K (Solución 3)
+                    "k": w.get("k") 
                 }
                 
+        # --- INICIO DE LA SOLUCIÓN ---
+        # Corregir el manejo de 'limit'.
+        # plan.get("limit") puede devolver None (si la clave existe)
+        # Usamos 'or 100' para asegurar que el default (100) se use si 'limit' es None.
         return {
             "action": "select", 
             "table": plan["table_name"], 
             "columns": ["*"], 
             "condition": cond,
-            "limit": plan.get("limit", 100)
+            "limit": plan.get("limit") or 100
         }
+        # --- FIN DE LA SOLUCIÓN ---
 
     if cmd == "DELETE":
         w = plan.get("where")
@@ -138,7 +141,6 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
 
     raise ValueError(f"Comando no soportado: {cmd}")
 
-# --- Split por ';' ignorando lo que esté dentro de comillas ---
 _STMT_SPLIT = re.compile(r';\s*(?=(?:[^"\']|"[^"]*"|\'[^\']*\')*$)')
 
 
@@ -151,7 +153,6 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 def home():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
-# --- ENDPOINT /api/sql MODIFICADO (SOLUCIÓN 4) ---
 @app.post("/api/sql")
 async def run_sql(payload: SQLPayload):
     q = payload.query.strip()
@@ -161,27 +162,16 @@ async def run_sql(payload: SQLPayload):
         results = []
         for s in statements:
             
-            # --- INICIO DE LA SOLUCIÓN 4 ---
-            # Envolver cada llamada bloqueante en run_in_threadpool
-            
-            # 1. Parseo (Bloqueante)
             plan_parser = await run_in_threadpool(_parser.parse, s)
-            # --- FIN DE LA SOLUCIÓN 4 ---
 
-            # --- MANEJO DE ERRORES MEJORADO ---
-            # Si es una consulta MM, informar al usuario que use la otra API
             if plan_parser.get("where", {}).get("op") == "MM_SIM":
                 raise ValueError("Las consultas de similitud (<->) deben hacerse "
                                  "cargando una imagen de consulta en la sección "
                                  "'Consulta Multimedia'.")
             
-            # --- INICIO DE LA SOLUCIÓN 4 ---
-            # 2. Adaptación del Plan (Bloqueante, aunque rápido)
             plan_engine = await run_in_threadpool(_adapt_plan_for_engine, plan_parser)
             
-            # 3. Ejecución del Motor (¡MUY Bloqueante!)
             result = await run_in_threadpool(get_engine().execute, plan_engine)
-            # --- FIN DE LA SOLUCIÓN 4 ---
             
             results.append({"sql": s, "result": result})
 
@@ -197,21 +187,15 @@ async def run_sql(payload: SQLPayload):
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {ve}")
     except Exception as e:
-        # Captura más amplia para errores inesperados del threadpool
         raise HTTPException(status_code=500, detail=f"Error de servidor: {e}")
 
-# --- ENDPOINT /api/sql_mm_query MODIFICADO (SOLUCIÓN 4) ---
 @app.post("/api/sql_mm_query")
 async def run_sql_mm_query(
     query: str = Form(...),
     query_file: UploadFile = File(...)
 ):
-    """
-    Maneja consultas de similitud multimedia que requieren la carga de un archivo.
-    """
     tmp_path = None
     try:
-        # 1. Guardar el archivo de consulta temporalmente (Esto es I/O async, está bien)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             content = await query_file.read()
             if not content:
@@ -221,22 +205,15 @@ async def run_sql_mm_query(
         
         start_time = time.time()
 
-        # --- INICIO DE LA SOLUCIÓN 4 ---
-        # 2. Parsear el SQL (Bloqueante)
         plan_parser = await run_in_threadpool(_parser.parse, query)
         
-        # 3. Modificar el plan para inyectar la ruta temporal
         if plan_parser.get("where", {}).get("op") != "MM_SIM":
             raise ValueError("Este endpoint solo acepta consultas de similitud (<->).")
             
         plan_parser["where"]["query_path"] = tmp_path
         
-        # 4. Adaptar (Bloqueante)
         plan_engine = await run_in_threadpool(_adapt_plan_for_engine, plan_parser)
-        
-        # 5. Ejecutar (¡MUY Bloqueante!)
         result = await run_in_threadpool(get_engine().execute, plan_engine)
-        # --- FIN DE LA SOLUCIÓN 4 ---
         
         end_time = time.time()
         execution_time = end_time - start_time
@@ -252,13 +229,9 @@ async def run_sql_mm_query(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error de servidor en consulta MM: {e}")
     finally:
-        # 6. Limpiar el archivo temporal
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-# --- FIN NUEVO ENDPOINT ---
-
-# --- ENDPOINT /api/upload MODIFICADO (SOLUCIÓN 4) ---
 @app.post("/api/upload")
 async def upload_csv(
     table: str = Form(...),
@@ -268,7 +241,6 @@ async def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Solo se aceptan CSV")
 
-    # 1) Guardar a un archivo temporal (I/O async, está bien)
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
@@ -281,17 +253,13 @@ async def upload_csv(
     except Exception as e:
         raise HTTPException(400, f"Error guardando archivo: {e}")
 
-    # 2) Cargar por ruta (Bloqueante)
     try:
-        # --- INICIO DE LA SOLUCIÓN 4 ---
-        # Envolver la llamada bloqueante a load_csv_path
         inserted, columns = await run_in_threadpool(
             get_engine().load_csv_path,
             table=table,
             csv_path=tmp_path,
             has_header=has_header,
         )
-        # --- FIN DE LA SOLUCIÓN 4 ---
         
         return {"ok": True, "table": table, "inserted": inserted, "columns": columns}
     except Exception as e:
@@ -303,14 +271,12 @@ async def upload_csv(
 
 @app.get("/api/tables")
 async def list_tables():
-    # Esta operación es rápida (solo lista archivos), no necesita threadpool
     data_dir = get_engine().data_dir
     names = [fn[:-5] for fn in os.listdir(data_dir) if fn.endswith(".meta")]
     return {"tables": sorted(names)}
 
 @app.get("/api/tables/{name}/schema")
 async def table_schema(name: str):
-    # Esta operación es rápida (lee un .meta), no necesita threadpool
     try:
         t = get_engine()._get_table(name)
         return {"table": name, "schema": t.schema, "indexes": getattr(t, "index_specs", [])}

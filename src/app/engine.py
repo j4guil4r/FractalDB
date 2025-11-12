@@ -11,18 +11,14 @@ import time
 import glob 
 import numpy as np 
 
-# --- NUEVOS IMPORTS FTS ---
 from src.indices.inverted_index.builder import InvertedIndexBuilder
 from src.indices.inverted_index.query import InvertedIndexQuery
 
-# --- NUEVOS IMPORTS MULTIMEDIA ---
 from src.multimedia.codebook_builder import CodebookBuilder
 from src.multimedia.histogram_builder import BoVWHistogramBuilder
-from src.multimedia.knn_search import KNNSearch # (Para KNN Secuencial)
+from src.multimedia.knn_search import KNNSearch 
 from src.multimedia.inverted_index_builder_mm import MMInvertedIndexBuilder
 from src.multimedia.inverted_index_query_mm import MMInvertedIndexQuery
-# --- FIN NUEVOS IMPORTS ---
-
 
 def _parse_sql_type_to_core(sql_type: str) -> Tuple[str, int]:
     t = sql_type.upper()
@@ -45,7 +41,6 @@ def _cast_for_column(value: Any, col_type: str, length: int) -> Any:
         return int(value)
     if t == "FLOAT":
         return float(value)
-    # VARCHAR base (incluye DATE y ARRAY[FLOAT] serializado)
     if isinstance(value, list):
         s = "[" + ", ".join(str(float(x)) for x in value) + "]"
     else:
@@ -74,17 +69,7 @@ def _parse_coords_from_value(val: Any) -> Optional[Tuple[float, ...]]:
             return None
     return None
 
-# -------------------------
-# Motor con IndexManager
-# -------------------------
-
 class Engine:
-    """
-    Conecta el AST del parser con tu core:
-      - Catalog en memoria: nombre -> Table
-      - Operaciones: create_table, create_table_from_file, insert, select, delete
-      - Índices: delegados en IndexManager
-    """
     def __init__(self, data_dir: str = "data"):
         self.catalog: Dict[str, Table] = {}
         self.data_dir = data_dir
@@ -100,7 +85,6 @@ class Engine:
     def _load_query_modules(self):
         """ Carga/Recarga todos los módulos de consulta FTS y MM disponibles. """
         
-        # 1. Cargar FTS
         try:
             if self.fts_query: self.fts_query.close()
             self.fts_query = InvertedIndexQuery(data_dir=self.data_dir)
@@ -112,7 +96,6 @@ class Engine:
             print(f"Motor: Error al cargar módulo FTS: {e}")
             self.fts_query = None
         
-        # 2. Cargar MM (KNN Indexado)
         for mod in self.mm_query_modules.values(): mod.close()
         self.mm_query_modules.clear()
         
@@ -128,10 +111,8 @@ class Engine:
             except Exception as e:
                 print(f"Motor: Error al cargar índice MM desde {meta_path}: {e}")
 
-        # 3. Cargar MM (KNN Secuencial)
         self.knn_seq_search.clear()
 
-    # ---------- API pública ----------
     def execute(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         act = stmt["action"]
         if act == "create_table":
@@ -156,8 +137,6 @@ class Engine:
             return self._drop_index_action(stmt)
         raise ValueError(f"Acción no soportada: {act}")
 
-    # --- INICIO DE LA SOLUCIÓN ---
-    # --- MÉTODO _infer_schema_from_rows AÑADIDO ---
     def _infer_schema_from_rows(self, header: Optional[List[str]], rows: List[List[str]]) -> List[Tuple[str, str, int]]:
         """
         Adivina el esquema de la tabla a partir de una muestra de filas.
@@ -167,7 +146,6 @@ class Engine:
 
         num_cols = len(rows[0])
         
-        # 1. Generar nombres de columna si no hay header
         if not header:
             col_names = [f"col_{i}" for i in range(num_cols)]
         else:
@@ -177,42 +155,36 @@ class Engine:
             elif len(col_names) > num_cols:
                 col_names = col_names[:num_cols]
         
-        # 2. Inicializar tipos y longitudes
-        # Asumimos INT primero, luego promovemos a FLOAT, y finalmente a VARCHAR
         col_types = [("INT", 0)] * num_cols 
         max_lengths = [0] * num_cols
 
         for row in rows:
             if len(row) != num_cols:
-                continue # Omitir filas irregulares
+                continue 
 
             for i, value in enumerate(row):
                 if value is None or value == "":
-                    continue # No podemos inferir de un nulo
+                    continue 
 
                 current_type, _ = col_types[i]
-                val_len = len(str(value).encode("utf-8")) # Longitud en bytes
+                val_len = len(str(value).encode("utf-8")) 
                 if val_len > max_lengths[i]:
                     max_lengths[i] = val_len
 
-                # Lógica de inferencia (Promoción de tipo)
                 if current_type == "INT":
                     try:
                         int(value)
-                        continue # Sigue siendo INT
+                        continue 
                     except (ValueError, TypeError):
-                        col_types[i] = ("FLOAT", 0) # Promover a FLOAT
+                        col_types[i] = ("FLOAT", 0) 
 
                 if col_types[i][0] == "FLOAT":
                     try:
                         float(value)
-                        continue # Sigue siendo FLOAT
+                        continue 
                     except (ValueError, TypeError):
-                        col_types[i] = ("VARCHAR", 0) # Promover a VARCHAR
-
-                # Si ya es VARCHAR, no hay nada que hacer
+                        col_types[i] = ("VARCHAR", 0) 
         
-        # 3. Formatear el esquema final
         final_schema = []
         for i, (col_type, _) in enumerate(col_types):
             length = 0
@@ -221,21 +193,18 @@ class Engine:
             elif col_type == "FLOAT":
                 length = 8
             elif col_type == "VARCHAR":
-                # Redondear la longitud a una potencia de 2 razonable
                 if max_lengths[i] <= 50: length = 64
                 elif max_lengths[i] <= 100: length = 128
                 elif max_lengths[i] <= 240: length = 256
-                else: length = max_lengths[i] + 16 # Un poco de padding
+                else: length = max_lengths[i] + 16 
             
             final_schema.append((col_names[i], col_type, length))
             
         return final_schema
-    # --- FIN DE LA SOLUCIÓN ---
 
     def load_csv_bytes(self, table: str, blob: bytes, has_header: bool = True) -> int:
         header, rows = self._read_csv_bytes(blob, has_header)
 
-        # Crear tabla con inferencia si no existe
         if table not in self.catalog:
             schema = self._infer_schema_from_rows(header, rows)
             t = Table(table, schema=schema, data_dir=self.data_dir)
@@ -259,7 +228,6 @@ class Engine:
         if not os.path.exists(csv_path):
             raise ValueError(f"Archivo no encontrado: {csv_path}")
 
-        # 1) Leer muestra para inferir esquema (siempre tolerante)
         sample_rows = []
         columns = []
         with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
@@ -275,7 +243,6 @@ class Engine:
 
         schema = self._infer_schema_from_rows(columns if has_header else None, sample_rows)
 
-        # 2) Crear o reutilizar tabla
         if table not in self.catalog:
             t = Table(table, schema=schema, data_dir=self.data_dir)
             self.catalog[table] = t
@@ -285,13 +252,12 @@ class Engine:
         casters = self._compile_casters(schema)
         rm = t.record_manager
 
-        # 3) Cargar todo el CSV (fallback único, robusto)
         inserted = 0
         with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f, \
             open(t.dat_path, "ab", buffering=2**20) as fout:
             reader = _csv.reader(f)
             if has_header:
-                _ = next(reader, None)  # saltar header real
+                _ = next(reader, None)  
 
             page_size = 4096
             buf = bytearray(page_size)
@@ -312,7 +278,6 @@ class Engine:
             if pos:
                 fout.write(memoryview(buf)[:pos])
 
-        # 4) Reconstruir índices
         try:
             self.idx.rebuild_all(t)
         except Exception:
@@ -342,15 +307,13 @@ class Engine:
     def _cast_row_fast(self, row_tuple, casters):
         return [f(v) for f, v in zip(casters, row_tuple)]
 
-
-    # ---------- Implementaciones por acción ----------
     def _create_table(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         name = stmt["table"]
         if name in self.catalog:
             raise ValueError(f"La tabla '{name}' ya existe")
 
         schema_triples: List[Tuple[str, str, int]] = []
-        declared_indexes: List[Tuple[str, str]] = []  # (col_name, index_type)
+        declared_indexes: List[Tuple[str, str]] = []  
 
         for col in stmt["columns"]:
             base_type, length = _parse_sql_type_to_core(col["type"])
@@ -391,7 +354,7 @@ class Engine:
                 raise ValueError("Se espera header en el CSV para crear el esquema")
             for i, row in enumerate(reader, start=1):
                 sample_rows.append(row)
-                if i >= 50000:   # cap de inferencia
+                if i >= 50000:   
                     break
 
         schema = self._infer_schema_from_rows(header, sample_rows)
@@ -401,7 +364,7 @@ class Engine:
         inserted = 0
         with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.reader(f)
-            _ = next(reader, None)  # saltar header
+            _ = next(reader, None)  
             for row in reader:
                 if not row:
                     continue
@@ -591,7 +554,14 @@ class Engine:
         t = self._get_table(stmt["table"])
         cols = stmt.get("columns", ["*"])
         cond = stmt.get("condition")
-        limit_k = stmt.get("limit", 100)
+        
+        # --- INICIO DE LA SOLUCIÓN ---
+        # Corregir el manejo de 'limit'.
+        # stmt.get("limit") puede devolver None (si la clave existe)
+        # Usamos 'or 100' para asegurar que el default (100) se use si 'limit' es None.
+        limit_k = stmt.get("limit") or 100
+        # --- FIN DE LA SOLUCIÓN ---
+        
         name_pos = _name_to_pos(t.schema)
 
         if cols == ["*"]:
@@ -700,7 +670,7 @@ class Engine:
         rows: List[List[Any]] = []
         count = 0
         for _rid, row_tuple in t.scan() or []:
-            if count >= limit_k:
+            if count >= limit_k: # <--- El bug 'int' >= 'NoneType' ocurría aquí
                 break
             row = list(row_tuple)
             if pred(row):
@@ -738,7 +708,6 @@ class Engine:
         return {"ok": True}
 
 
-    # ---------- Utilidades ----------
     def _get_table(self, name: str) -> Table:
         if name not in self.catalog:
             meta_path = os.path.join(self.data_dir, f"{name}.meta")
@@ -819,7 +788,6 @@ class Engine:
             for r in rows:
                 f.write(rm.pack(r))
 
-# Singleton para integrar con la API
 _engine_singleton: Optional[Engine] = None
 
 def get_engine() -> Engine:
