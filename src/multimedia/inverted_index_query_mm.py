@@ -8,16 +8,12 @@ import math
 from collections import defaultdict
 from typing import List, Tuple, Dict, Any, Optional
 
-# Importamos los módulos multimedia necesarios
 from src.multimedia.histogram_builder import BoVWHistogramBuilder
 
 class MMInvertedIndexQuery:
-    """
-    Realiza búsquedas KNN rápidas (Top-K) utilizando un índice
-    invertido multimedia pre-construido.
+    # Realiza búsquedas KNN rápidas (Top-K) utilizando un índice invertido multimedia pre-construido.
+    #Usa el mismo 'scoring' de similitud coseno que el índice textual.
     
-    Usa el mismo 'scoring' de similitud coseno que el índice textual.
-    """
     
     def __init__(self, k_clusters: int, data_dir: str = 'data'):
         self.k = k_clusters
@@ -30,18 +26,17 @@ class MMInvertedIndexQuery:
             raise FileNotFoundError(f"Índice MM (k={self.k}) no encontrado. "
                                     "Asegúrate de construirlo primero.")
 
-        # 1. Cargar metadatos (Lexicón, Normas, IDF) en RAM
+        # Cargar metadatos (Lexicón, Normas, IDF) en RAM
         self._load_metadata()
 
-        # 2. Inicializar el generador de histogramas
-        # (Esto cargará el codebook K-Means)
+        # Inicializar el generador de histogramas
         try:
             self.hist_builder = BoVWHistogramBuilder(k_clusters, data_dir)
         except FileNotFoundError as e:
             print(f"Error fatal: {e}")
             raise
 
-        # 3. Abrir el archivo de postings (.dat)
+        # Abrir el archivo de postings (.dat)
         try:
             self.index_file = open(self.index_path, 'rb')
         except IOError as e:
@@ -51,7 +46,8 @@ class MMInvertedIndexQuery:
         print(f"Módulo de consulta KNN Indexado (K={self.k}) listo.")
 
     def _load_metadata(self):
-        """Carga el lexicón, metadatos de documentos, K e IDF."""
+        # Carga el lexicón, metadatos de documentos, K e IDF
+
         with open(self.meta_path, 'rb') as f:
             meta = pickle.load(f)
         
@@ -66,10 +62,8 @@ class MMInvertedIndexQuery:
         print(f"Metadatos MM (K={self.k}) cargados. {self.total_docs} imágenes.")
 
     def _get_postings(self, term_id: int) -> List[Tuple[Any, float]]:
-        """
-        Obtiene la lista de postings para una palabra visual (term_id)
-        leyendo desde el disco (memoria secundaria).
-        """
+        #Obtiene la lista de postings para una palabra visual (term_id) leyendo desde el disco (memoria secundaria).
+
         lookup = self.lexicon.get(term_id)
         if not lookup:
             return []
@@ -79,14 +73,14 @@ class MMInvertedIndexQuery:
         try:
             self.index_file.seek(offset)
             data = self.index_file.read(length)
-            # Retorna [(img_id, tfidf_weight), ...]
             return pickle.loads(data)
         except Exception as e:
             print(f"Error al leer postings para term_id '{term_id}': {e}")
             return []
 
     def close(self):
-        """Cierra el archivo de índice."""
+        # Cierra el archivo de índice
+
         if hasattr(self, 'index_file') and self.index_file:
             self.index_file.close()
             print("Módulo de consulta MM: Archivo de índice cerrado.")
@@ -95,10 +89,8 @@ class MMInvertedIndexQuery:
         self.close()
 
     def _calculate_similarity(self, q_hist_tf: np.ndarray, top_k: int) -> List[Tuple[float, Any]]:
-        """
-        Función interna para calcular la similitud coseno usando
-        el índice invertido.
-        """
+        #Función interna para calcular la similitud coseno usando el índice invertido.
+
         if q_hist_tf is None or np.sum(q_hist_tf) == 0:
             return []
 
@@ -111,7 +103,7 @@ class MMInvertedIndexQuery:
 
         # 2. Calcular Scores (Similitud Coseno)
         # Usamos acumuladores para el producto punto (V(q) . V(d))
-        scores = defaultdict(float) # img_id -> score (acumulado)
+        scores = defaultdict(float) 
         
         # Iterar solo sobre las "palabras visuales" que SÍ están en la consulta
         # (Esto es lo que hace que sea rápido)
@@ -148,21 +140,19 @@ class MMInvertedIndexQuery:
         return sorted(top_k_heap, reverse=True)
 
     def query_by_path(self, query_image_path: str, top_k: int = 10) -> List[Tuple[float, Any]]:
-        """
-        Función pública para buscar por similitud usando la ruta de una imagen.
-        """
-        # 1. Convertir imagen de consulta en histograma (TF)
+        #Función pública para buscar por similitud usando la ruta de una imagen.
+
+        #Convertir imagen de consulta en histograma (TF)
         q_hist_tf = self.hist_builder.create_histogram_from_path(query_image_path)
         
-        # 2. Calcular similitud
+        #Calcular similitud
         return self._calculate_similarity(q_hist_tf, top_k)
 
     def query_by_bytes(self, query_image_bytes: bytes, top_k: int = 10) -> List[Tuple[float, Any]]:
-        """
-        Función pública para buscar por similitud usando los bytes de una imagen.
-        """
-        # 1. Convertir imagen de consulta en histograma (TF)
+        # Función pública para buscar por similitud usando los bytes de una imagen.
+
+        #Convertir imagen de consulta en histograma (TF)
         q_hist_tf = self.hist_builder.create_histogram_from_bytes(query_image_bytes)
         
-        # 2. Calcular similitud
+        # Calcular similitud
         return self._calculate_similarity(q_hist_tf, top_k)

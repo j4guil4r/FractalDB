@@ -1,5 +1,3 @@
-# src/multimedia/inverted_index_builder_mm.py
-
 import os
 import pickle
 import numpy as np
@@ -7,15 +5,12 @@ import math
 import heapq
 import shutil
 from collections import defaultdict
-# --- INICIO DE LA SOLUCIÓN ---
 from typing import Iterator, Tuple, Dict, List, Any, Callable
-# --- FIN DE LA SOLUCIÓN ---
 
 class MMInvertedIndexBuilder:
-    """
-    Construye un Índice Invertido para vectores de histogramas multimedia (BoVW).
-    Usa una lógica SPIMI optimizada en 2 pases para no agotar la RAM.
-    """
+    #Construye un Índice Invertido para vectores de histogramas multimedia (BoVW).
+    #Usa una lógica SPIMI optimizada en 2 pases para no agotar la RAM.
+    
     
     def __init__(self, data_dir: str = 'data', k_clusters: int = 0):
         self.data_dir = data_dir
@@ -36,7 +31,7 @@ class MMInvertedIndexBuilder:
         self.block_file_paths: List[str] = []
 
     def _write_block_to_disk(self, in_memory_index: Dict[int, list], block_num: int) -> str:
-        """ Escribe un bloque temporal en disco. """
+        # Escribe un bloque temporal en disco.
         block_path = os.path.join(self.temp_block_dir, f"block_{block_num:04d}.pkl")
         sorted_terms = sorted(in_memory_index.keys())
         with open(block_path, 'wb') as f:
@@ -47,13 +42,7 @@ class MMInvertedIndexBuilder:
         return block_path
 
     def build(self, hist_iterator_factory: Callable[[], Iterator[Tuple[Any, np.ndarray]]]):
-        """
-        Construye el índice en 2 pases + merge, sin cargar todo a RAM.
-        
-        Args:
-            hist_iterator_factory: Una *función* que devuelve un nuevo
-                                     iterador de (img_id, hist_tf) cada vez que se llama.
-        """
+        #Construye el índice en 2 pases + merge, sin cargar todo a RAM.
         
         # --- Fase 1: Calcular DF (Document Frequency) ---
         print("MM-Index (Fase 1/3): Calculando DF...")
@@ -116,10 +105,8 @@ class MMInvertedIndexBuilder:
         print(f"Metadatos: {self.final_meta_path}")
 
     def _merge_blocks(self):
-        """
-        Fase 2 de SPIMI: Fusiona k-bloques usando un min-heap.
-        Calcula TF-IDF y escribe el índice y lexicón finales.
-        """
+        #Fase 2 de SPIMI: Fusiona k-bloques usando un min-heap. Calcula TF-IDF y escribe el índice y lexicón finales.
+
         lexicon = {} 
         heap = []
         block_files = []
@@ -186,9 +173,8 @@ class MMInvertedIndexBuilder:
             print("Directorio temporal de bloques MM eliminado.")
 
     def _save_final_metadata(self, lexicon: Dict):
-        """
-        Guarda el lexicón final, los metadatos de documentos (normas) y N.
-        """
+        #Guarda el lexicón final, los metadatos de documentos (normas) y N.
+
         final_metadata = {
             'k': self.k,
             'total_docs': self.total_docs,

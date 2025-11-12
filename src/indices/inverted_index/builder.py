@@ -4,8 +4,8 @@ import os
 import pickle
 import sys
 import math
-import heapq  # <--- Añadir import para el min-heap
-import shutil # <--- Añadir import para borrar directorio temporal
+import heapq 
+import shutil 
 from collections import defaultdict
 from typing import Iterator, Tuple, Dict, List, Any
 from src.text_processing import preprocess_text
@@ -28,13 +28,12 @@ class InvertedIndexBuilder:
 
         self.block_size_limit = block_size_limit_mb * 1024 * 1024
         
-        # --- Estos se cargarán desde el meta temporal ---
         self.block_file_paths: List[str] = []
         self.doc_metadata: Dict[Any, Tuple[int, float]] = {}
         self.total_docs = 0
 
     def _write_block_to_disk(self, in_memory_index: Dict[str, list], block_num: int) -> str:
-        """ Escribe un bloque y devuelve la ruta del archivo. """
+        # Escribe un bloque y devuelve la ruta del archivo.
         if not in_memory_index:
             return ""
 
@@ -51,7 +50,7 @@ class InvertedIndexBuilder:
         return block_path
 
     def build_blocks(self, document_iterator: Iterator[Tuple[Any, str]]):
-        """ Fase 1 de SPIMI: Genera bloques temporales. """
+        # Fase 1 de SPIMI: Genera bloques temporales.
         self.total_docs = 0
         block_num = 0
         in_memory_index = defaultdict(list)
@@ -80,7 +79,7 @@ class InvertedIndexBuilder:
                 # Almacenamos el tf simple por ahora
                 in_memory_index[term].append((docID, tf))
                 
-                # Calculamos la norma usando el *peso* logarítmico
+                # Calculamos la norma usando el peso logarítmico
                 tf_weight = 1 + math.log10(tf)
                 doc_norm_squared += tf_weight**2
             
@@ -105,7 +104,7 @@ class InvertedIndexBuilder:
         self._save_temp_metadata()
 
     def _save_temp_metadata(self):
-        """ Guarda los metadatos temporales necesarios para la fase de merge. """
+        # Guarda los metadatos temporales necesarios para la fase de merge. 
         metadata = {
             'total_docs': self.total_docs,
             'doc_metadata': self.doc_metadata,
@@ -116,7 +115,7 @@ class InvertedIndexBuilder:
         print(f"Metadatos temporales de construcción guardados.")
 
     def _load_temp_metadata(self):
-        """ Carga los metadatos de la Fase 1 para iniciar la Fase 2. """
+        # Carga los metadatos de la Fase 1 para iniciar la Fase 2.
         with open(self.temp_meta_path, 'rb') as f:
             metadata = pickle.load(f)
         self.total_docs = metadata['total_docs']
@@ -124,12 +123,8 @@ class InvertedIndexBuilder:
         self.block_file_paths = metadata['block_file_paths']
         print("Metadatos temporales cargados para la Fase 2.")
 
-    # --- NUEVA FUNCIÓN: FASE 2 (MERGE) ---
+    # Merge
     def _merge_blocks(self):
-        """
-        Fase 2 de SPIMI: Fusiona k-bloques usando un min-heap.
-        Calcula TF-IDF y escribe el índice y lexicón finales.
-        """
         print("Iniciando SPIMI (Fase 2): Fusión de Bloques...")
         self._load_temp_metadata()
         
@@ -142,29 +137,29 @@ class InvertedIndexBuilder:
         block_files = []
 
         try:
-            # 1. Abrir todos los archivos de bloque
+            # Abrir todos los archivos de bloque
             for i, block_path in enumerate(self.block_file_paths):
                 f = open(block_path, 'rb')
                 block_files.append(f)
                 
-                # 2. "Priming the heap": Leer el primer término de cada bloque
+                # "Priming the heap"
                 try:
                     term, postings = pickle.load(f)
                     heapq.heappush(heap, (term, i, postings))
                 except EOFError:
-                    f.close() # Bloque vacío, lo cerramos y omitimos
+                    f.close()
 
-            # 3. Abrir el archivo de índice final (donde irán los postings)
+            # Abrir el archivo de índice final (donde irán los postings)
             with open(self.final_index_path, 'wb') as f_out:
                 
-                # 4. Iniciar el K-way merge
+                # Iniciar el K-way merge
                 while heap:
                     
-                    # 5. Tomar el término alfabéticamente menor
+                    # Tomar el término alfabéticamente menor
                     current_term, block_idx, first_postings = heapq.heappop(heap)
                     merged_postings = first_postings
                     
-                    # 6. Combinar todos los postings para este término
+                    # Combinar todos los postings para este término
                     while heap and heap[0][0] == current_term:
                         _, next_block_idx, next_postings = heapq.heappop(heap)
                         merged_postings.extend(next_postings)
@@ -176,56 +171,48 @@ class InvertedIndexBuilder:
                         except EOFError:
                             block_files[next_block_idx].close()
                     
-                    # 7. Recargar el heap desde el primer bloque
+                    # Recargar el heap desde el primer bloque
                     try:
                         term, postings = pickle.load(block_files[block_idx])
                         heapq.heappush(heap, (term, block_idx, postings))
                     except EOFError:
                         block_files[block_idx].close()
                         
-                    # 8. ¡Calcular TF-IDF y Escribir!
+                    # Calcular TF-IDF
                     
-                    # Document Frequency (df)
                     df = len(merged_postings)
-                    # Inverse Document Frequency (idf)
                     idf = math.log10(self.total_docs / df)
                     
                     weighted_postings = []
                     for docID, tf in merged_postings:
-                        # Logarithmic Term Frequency (tf_w)
                         tf_weight = 1 + math.log10(tf)
-                        # Peso final
                         final_weight = tf_weight * idf
                         weighted_postings.append((docID, final_weight))
 
-                    # 9. Escribir los postings finales y guardar la posición
+                    # Escribir los postings finales y guardar la posición
                     current_offset = f_out.tell()
                     data_to_write = pickle.dumps(weighted_postings)
                     f_out.write(data_to_write)
                     
-                    # Guardar en el lexicón
                     lexicon[current_term] = (current_offset, len(data_to_write))
 
             print("SPIMI (Fase 2): Fusión completada.")
             
-            # 10. Guardar metadatos finales
             self._save_final_metadata(lexicon)
 
         finally:
-            # 11. Limpieza
+            # Limpieza
             for f in block_files:
                 if not f.closed:
                     f.close()
             
-            # Borrar el directorio de bloques temporales
             if os.path.exists(self.temp_block_dir):
                 shutil.rmtree(self.temp_block_dir)
             print("Directorio temporal de bloques eliminado.")
 
     def _save_final_metadata(self, lexicon: Dict):
-        """
-        Guarda el lexicón final, los metadatos de documentos (normas) y N.
-        """
+        # Guarda el lexicón final, los metadatos de documentos (normas) y N
+
         final_metadata = {
             'total_docs': self.total_docs,
             'doc_metadata': self.doc_metadata,
@@ -236,13 +223,12 @@ class InvertedIndexBuilder:
         print(f"Metadatos finales y Lexicón guardados en {self.final_meta_path}")
 
     def build(self, document_iterator: Iterator[Tuple[Any, str]]):
-        """
-        Función principal para construir el índice completo.
-        """
-        # Fase 1: Generar bloques
+        # Función principal para construir el índice completo
+        
+        # Generar bloques
         self.build_blocks(document_iterator)
         
-        # Fase 2: Fusionar bloques
+        # Fusionar bloques
         self._merge_blocks()
         
         print(f"¡Construcción de Índice Invertido completada!")

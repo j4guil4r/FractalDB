@@ -1,5 +1,3 @@
-# src/multimedia/knn_search.py
-
 import os
 import pickle
 import numpy as np
@@ -10,25 +8,12 @@ from typing import List, Tuple, Iterable, Dict, Any
 from src.multimedia.histogram_builder import BoVWHistogramBuilder
 
 class KNNSearch:
-    """
-    Implementa el "KNN Secuencial" (Paso 1 del Proyecto 2 Multimedia).
-    
-    1.  Construye una base de datos de vectores TF-IDF + Normas
-        para todas las imágenes de la colección.
-    2.  Realiza búsquedas secuenciales (fuerza bruta) usando
-        Similitud Coseno y un heap para el Top-K.
-    """
     
     def __init__(self, k_clusters: int, data_dir: str = 'data'):
-        """
-        Args:
-            k_clusters: El K del K-Means (tamaño del vocabulario).
-        """
         self.k = k_clusters
         self.data_dir = data_dir
         
-        # 1. Inicializar el generador de histogramas (Paso 3 anterior)
-        # Esto cargará el codebook (K-Means entrenado)
+        # Inicializar el generador de histogramas (Paso 3 anterior)
         try:
             self.hist_builder = BoVWHistogramBuilder(k_clusters, data_dir)
         except FileNotFoundError as e:
@@ -46,12 +31,8 @@ class KNNSearch:
         self.vector_norms: Optional[np.ndarray] = None
 
     def build_database(self, image_id_path_tuples: Iterable[Tuple[Any, str]]):
-        """
-        Construye la base de datos TF-IDF y la guarda en disco.
-        
-        Args:
-            image_id_path_tuples: Un iterable de (id_imagen, ruta_imagen)
-        """
+        # Construye la base de datos TF-IDF y la guarda en disco.
+
         print("Iniciando construcción de BD KNN Secuencial (TF-IDF)...")
         
         raw_histograms: Dict[Any, np.ndarray] = {}
@@ -80,8 +61,7 @@ class KNNSearch:
         # --- Fase 2: Calcular IDF ---
         print("Fase 2/3: Calculando vector IDF...")
         # IDF Suavizado: log( (N+1) / (df+1) ) + 1
-        # Se suma 1 para evitar división por cero si una palabra visual
-        # nunca aparece (df=0) o si aparece en todas (N=df).
+
         N = doc_count
         self.idf_vector = np.log((N + 1) / (df + 1)) + 1.0
         
@@ -123,7 +103,7 @@ class KNNSearch:
         print(f"  -> Vectores TF-IDF: {self.tfidf_vectors.shape}")
 
     def load_database(self):
-        """Carga la base de datos TF-IDF desde el disco a la RAM."""
+        # Carga la base de datos TF-IDF desde el disco a la RAM
         if not os.path.exists(self.db_path):
             raise FileNotFoundError(f"Archivo de BD no encontrado: {self.db_path}")
             
@@ -138,27 +118,19 @@ class KNNSearch:
         print(f"  -> BD cargada. {len(self.image_ids)} vectores en RAM.")
 
     def search_by_path(self, query_image_path: str, top_k: int = 10) -> List[Tuple[float, Any]]:
-        """
-        Busca las Top-K imágenes más similares a una imagen de consulta.
-        
-        Args:
-            query_image_path: Ruta a la imagen de consulta.
-            top_k: Número de resultados a devolver.
-            
-        Returns:
-            Lista de tuplas (score_similitud, id_imagen)
-        """
-        # 1. Asegurarse de que la BD esté en RAM
+        # Busca las Top-K imágenes más similares a una imagen de consulta.
+
+        # Asegurarse de que la BD esté en RAM
         if self.tfidf_vectors is None:
             self.load_database()
             
-        # 2. Generar Histograma (TF) para la consulta [cite: 125]
+        # Generar Histograma (TF) para la consulta [cite: 125]
         q_hist_tf = self.hist_builder.create_histogram_from_path(query_image_path)
         if q_hist_tf is None:
             print("Error: No se pudo procesar la imagen de consulta.")
             return []
             
-        # 3. Ponderar (TF-IDF) y normalizar la consulta
+        # Ponderar (TF-IDF) y normalizar la consulta
         q_tfidf_vec = q_hist_tf * self.idf_vector
         q_norm = np.linalg.norm(q_tfidf_vec)
         
@@ -166,11 +138,8 @@ class KNNSearch:
             print("Advertencia: El vector de consulta es cero (sin características).")
             return []
             
-        # 4. Calcular Similitud Coseno (Sequential Scan) [cite: 127]
-        # SimCos(Q, D) = (Q · D) / (|Q| * |D|)
+        # Calcular Similitud Coseno (Sequential Scan) 
         
-        # (Q · D) -> Producto punto de Q con TODOS los vectores de la BD
-        # np.dot es mucho más rápido que un bucle en Python
         dot_products = np.dot(self.tfidf_vectors, q_tfidf_vec)
         
         # (|Q| * |D|) -> Producto de normas
@@ -179,7 +148,7 @@ class KNNSearch:
         # División elemento a elemento
         similarities = dot_products / norm_products
 
-        # 5. Usar un heap para mantener el Top-K 
+        # Usar un heap para mantener el Top-K 
         top_k_heap: List[Tuple[float, Any]] = []
         
         for i, score in enumerate(similarities):
@@ -192,14 +161,12 @@ class KNNSearch:
                 # Reemplaza el más pequeño si el actual es más grande
                 heapq.heappushpop(top_k_heap, (score, img_id))
                 
-        # 6. Devolver resultados ordenados de mayor a menor
+        # Devolver resultados ordenados de mayor a menor
         return sorted(top_k_heap, reverse=True)
 
     def search_by_bytes(self, query_image_bytes: bytes, top_k: int = 10) -> List[Tuple[float, Any]]:
-        """
-        Busca las Top-K imágenes más similares a unos bytes de imagen.
-        (La lógica es idéntica a search_by_path)
-        """
+        # Busca las Top-K imágenes más similares a unos bytes de imagen.
+
         if self.tfidf_vectors is None:
             self.load_database()
             

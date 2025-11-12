@@ -202,13 +202,13 @@ class SQLParser:
         plan['values'] = [self._cast_value(p) for p in parts]
         return plan
 
-    # --- MODIFICADO (P2): Aceptar limit_str y parsear FTS/MM ---
+    # (P2): Aceptar limit_str y parsear FTS/MM 
     def _parse_select(self, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
         plan = {
             'command': 'SELECT',
             'table_name': table_name,
             'where': None,
-            'limit': int(limit_str) if limit_str else None # <-- Asigna None si no hay limit
+            'limit': int(limit_str) if limit_str else None 
         }
         if not where_str:
             return plan

@@ -1,4 +1,3 @@
-# src/app/engine.py
 from src.core.table import Table
 from src.indices.manager import IndexManager
 
@@ -189,7 +188,6 @@ class Engine:
             length = min(max_len[i] if max_len[i] > 0 else 1, 255)
             schema.append((name, "VARCHAR", length))
         return schema
-    # --- FIN _infer_schema_from_rows ---
 
     def execute(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         act = stmt["action"]
@@ -504,7 +502,6 @@ class Engine:
             if path and (path.endswith('.jpg') or path.endswith('.png') or path.endswith('.jpeg')):
                 yield (rid, path)
 
-# ... (dentro de la clase Engine en engine.py) ...
 
     def _rebuild_mm_index_internal(self, t: Table, column_name: str, k: int):
         print(f"Paso 1/3 (Rebuild): Escaneando rutas de imágenes para K={k}...")
@@ -521,9 +518,6 @@ class Engine:
         hist_builder = BoVWHistogramBuilder(k, self.data_dir)
         mm_idx_builder = MMInvertedIndexBuilder(self.data_dir, k_clusters=k)
         
-        # --- INICIO DE LA SOLUCIÓN 3 (Engine-side) ---
-        # Creamos una *función* que devuelve un nuevo generador cada vez.
-        # Esto permite al builder hacer múltiples pases sobre los datos.
         def hist_generator_factory() -> Iterator[Tuple[int, np.ndarray]]:
             print("  -> Iniciando generador de histogramas...")
             for rid, path in image_paths_tuples:
@@ -531,9 +525,7 @@ class Engine:
                 if hist_tf is not None:
                     yield (rid, hist_tf)
         
-        # Pasamos la *función* (fábrica), no el generador
         mm_idx_builder.build(hist_generator_factory)
-        # --- FIN DE LA SOLUCIÓN 3 (Engine-side) ---
         
         return mm_idx_builder.total_docs
 
@@ -720,7 +712,6 @@ class Engine:
             if os.path.exists(meta_path):
                 t = Table(name, data_dir=self.data_dir)
                 self.catalog[name] = t
-                # --- MODIFICADO (P2): No reconstruir FTS/MM al cargar ---
                 for col, typ in getattr(t, "index_specs", []):
                     if typ.upper() == "FTS" or typ.upper().startswith("MM_BOVW"):
                         continue 

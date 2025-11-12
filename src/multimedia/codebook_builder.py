@@ -8,17 +8,9 @@ from typing import List, Iterable, Optional
 from .feature_extractor import SIFTExtractor
 
 class CodebookBuilder:
-    """
-    Construye el "Diccionario de Palabras Visuales" (Codebook) usando
-    K-Means sobre un gran conjunto de descriptores SIFT.
-    """
     
     def __init__(self, k: int, data_dir: str = 'data'):
-        """
-        Args:
-            k: El número de "palabras visuales" (centroides) a generar.
-            data_dir: El directorio donde se guardará el codebook.
-        """
+
         self.k = k
         self.codebook_path = os.path.join(data_dir, f"mm_codebook_k{k}.pkl")
         self.extractor = SIFTExtractor()
@@ -26,7 +18,7 @@ class CodebookBuilder:
         self.kmeans = MiniBatchKMeans(
             n_clusters=self.k,
             verbose=True,
-            batch_size=256 * 4, # Batch size más grande para partial_fit
+            batch_size=256 * 4, 
             n_init=3, 
             max_iter=100,
             random_state=42
@@ -35,10 +27,8 @@ class CodebookBuilder:
 
     def _get_descriptor_batches(self, image_paths: Iterable[str], 
                                 batch_size: int = 1024) -> Iterable[np.ndarray]:
-        """
-        Un generador que produce lotes de descriptores SIFT desde las rutas
-        de las imágenes, para no agotar la RAM.
-        """
+        #Un generador que produce lotes de descriptores SIFT desde las rutas de las imágenes, para no agotar la RAM.
+
         descriptors_batch = []
         count = 0
         
@@ -58,16 +48,9 @@ class CodebookBuilder:
         if descriptors_batch:
             yield np.vstack(descriptors_batch)
 
-    # --- INICIO DE LA SOLUCIÓN 2 (Optimización RAM) ---
     def build_from_paths(self, image_paths: Iterable[str], sample_limit: int = 500_000):
-        """
-        Entrena el modelo K-Means usando descriptores de las imágenes
-        proporcionadas, usando partial_fit para no agotar la RAM.
-        
-        Args:
-            image_paths: Un iterable (ej. lista) de rutas a las imágenes de entrenamiento.
-            sample_limit: Nro. máximo de descriptores a usar para entrenar K-Means
-        """
+        #Entrena el modelo K-Means usando descriptores de las imágenesb proporcionadas, usando partial_fit para no agotar la RAM.
+
         print(f"Iniciando construcción de Codebook (K={self.k}) con partial_fit...")
         print(f"Usando un límite de ~{sample_limit} descriptores para el entrenamiento.")
 
@@ -101,7 +84,6 @@ class CodebookBuilder:
         
         # Guardar el modelo K-Means
         self.save_codebook()
-    # --- FIN DE LA SOLUCIÓN 2 ---
 
     def save_codebook(self):
         """
@@ -119,9 +101,7 @@ class CodebookBuilder:
 
     @staticmethod
     def load_codebook(k: int, data_dir: str = 'data') -> Optional[MiniBatchKMeans]:
-        """
-        Función estática para cargar un codebook K-Means guardado.
-        """
+        # Función estática para cargar un codebook K-Means guardado.
         codebook_path = os.path.join(data_dir, f"mm_codebook_k{k}.pkl")
         if not os.path.exists(codebook_path):
             print(f"Error: No se encontró el codebook en {codebook_path}")
