@@ -113,6 +113,85 @@ class Engine:
 
         self.knn_seq_search.clear()
 
+    # --- Volvemos a tu _infer_schema_from_rows original (P1) ---
+    def _infer_schema_from_rows(self, header, rows, scan_cap=50000):
+        if header:
+            names = header
+            ncols = len(header)
+        else:
+            if not rows:
+                raise ValueError("CSV sin header ni filas")
+            ncols = len(rows[0])
+            names = [f"col{i}" for i in range(ncols)]
+
+        int_re = re.compile(r"^-?\d+$")
+        float_re = re.compile(r"^-?\d+(?:\.\d+)?$")
+        date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+        flags = []
+        max_len = [0] * ncols
+        for _ in range(ncols):
+            flags.append({
+                "all_int": True,
+                "all_numeric": True,
+                "all_date_iso": True,
+                "any_empty": False,
+                "force_varchar": False,
+            })
+
+        for r_i, row in enumerate(rows):
+            if r_i >= scan_cap:
+                break
+            for i in range(ncols):
+                val = "" if i >= len(row) else (row[i] if row[i] is not None else "")
+                s = str(val).strip()
+                max_len[i] = max(max_len[i], len(s.encode("utf-8")))
+
+                if s == "":
+                    flags[i]["any_empty"] = True
+                    flags[i]["all_int"] = False
+                    flags[i]["all_numeric"] = False
+                    flags[i]["all_date_iso"] = False
+                    flags[i]["force_varchar"] = True
+                    continue
+
+                if int_re.match(s):
+                    flags[i]["all_date_iso"] = False
+                    continue
+
+                if float_re.match(s):
+                    flags[i]["all_int"] = False
+                    flags[i]["all_date_iso"] = False
+                    continue
+
+                if date_re.match(s):
+                    flags[i]["all_int"] = False
+                    flags[i]["all_numeric"] = False
+                    continue
+
+                flags[i]["all_int"] = False
+                flags[i]["all_numeric"] = False
+                flags[i]["all_date_iso"] = False
+                flags[i]["force_varchar"] = True
+
+        schema = []
+        for i, name in enumerate(names):
+            f = flags[i]
+            if not f["force_varchar"]:
+                if f["all_int"]:
+                    schema.append((name, "INT", 0))
+                    continue
+                if f["all_numeric"]:
+                    schema.append((name, "FLOAT", 0))
+                    continue
+                if f["all_date_iso"]:
+                    schema.append((name, "VARCHAR", 10))
+                    continue
+            length = min(max_len[i] if max_len[i] > 0 else 1, 255)
+            schema.append((name, "VARCHAR", length))
+        return schema
+    # --- FIN _infer_schema_from_rows ---
+
     def execute(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         act = stmt["action"]
         if act == "create_table":
@@ -129,78 +208,11 @@ class Engine:
             return self._create_index_action(stmt)
         if act == "create_fts_index":
             return self._create_fts_index(stmt)
-            
         if act == "create_mm_index":
             return self._create_mm_index(stmt)
-            
         if act == "drop_index":
             return self._drop_index_action(stmt)
         raise ValueError(f"Acción no soportada: {act}")
-
-    def _infer_schema_from_rows(self, header: Optional[List[str]], rows: List[List[str]]) -> List[Tuple[str, str, int]]:
-        """
-        Adivina el esquema de la tabla a partir de una muestra de filas.
-        """
-        if not rows:
-            raise ValueError("No se puede inferir el esquema de un CSV vacío.")
-
-        num_cols = len(rows[0])
-        
-        if not header:
-            col_names = [f"col_{i}" for i in range(num_cols)]
-        else:
-            col_names = header
-            if len(col_names) < num_cols:
-                col_names.extend([f"col_{i}" for i in range(len(col_names), num_cols)])
-            elif len(col_names) > num_cols:
-                col_names = col_names[:num_cols]
-        
-        col_types = [("INT", 0)] * num_cols 
-        max_lengths = [0] * num_cols
-
-        for row in rows:
-            if len(row) != num_cols:
-                continue 
-
-            for i, value in enumerate(row):
-                if value is None or value == "":
-                    continue 
-
-                current_type, _ = col_types[i]
-                val_len = len(str(value).encode("utf-8")) 
-                if val_len > max_lengths[i]:
-                    max_lengths[i] = val_len
-
-                if current_type == "INT":
-                    try:
-                        int(value)
-                        continue 
-                    except (ValueError, TypeError):
-                        col_types[i] = ("FLOAT", 0) 
-
-                if col_types[i][0] == "FLOAT":
-                    try:
-                        float(value)
-                        continue 
-                    except (ValueError, TypeError):
-                        col_types[i] = ("VARCHAR", 0) 
-        
-        final_schema = []
-        for i, (col_type, _) in enumerate(col_types):
-            length = 0
-            if col_type == "INT":
-                length = 4
-            elif col_type == "FLOAT":
-                length = 8
-            elif col_type == "VARCHAR":
-                if max_lengths[i] <= 50: length = 64
-                elif max_lengths[i] <= 100: length = 128
-                elif max_lengths[i] <= 240: length = 256
-                else: length = max_lengths[i] + 16 
-            
-            final_schema.append((col_names[i], col_type, length))
-            
-        return final_schema
 
     def load_csv_bytes(self, table: str, blob: bytes, has_header: bool = True) -> int:
         header, rows = self._read_csv_bytes(blob, has_header)
@@ -555,12 +567,9 @@ class Engine:
         cols = stmt.get("columns", ["*"])
         cond = stmt.get("condition")
         
-        # --- INICIO DE LA SOLUCIÓN ---
-        # Corregir el manejo de 'limit'.
-        # stmt.get("limit") puede devolver None (si la clave existe)
-        # Usamos 'or 100' para asegurar que el default (100) se use si 'limit' es None.
-        limit_k = stmt.get("limit") or 100
-        # --- FIN DE LA SOLUCIÓN ---
+        # --- ESTA ES LA CORRECCIÓN CLAVE #2 ---
+        limit_k = stmt.get("limit") or 100 # <--- 'or 100' maneja el 'None'
+        # --- FIN DE LA CORRECCIÓN ---
         
         name_pos = _name_to_pos(t.schema)
 
@@ -591,7 +600,6 @@ class Engine:
                     query_module = list(self.mm_query_modules.values())[0]
                 
                 k_used = query_module.k
-                
                 query_path = cond["query_path"]
                 
                 if not os.path.exists(query_path):
@@ -670,7 +678,7 @@ class Engine:
         rows: List[List[Any]] = []
         count = 0
         for _rid, row_tuple in t.scan() or []:
-            if count >= limit_k: # <--- El bug 'int' >= 'NoneType' ocurría aquí
+            if count >= limit_k: # <--- El bug 'int' >= 'NoneType' ocurría aquí si limit_k era None
                 break
             row = list(row_tuple)
             if pred(row):
@@ -714,6 +722,7 @@ class Engine:
             if os.path.exists(meta_path):
                 t = Table(name, data_dir=self.data_dir)
                 self.catalog[name] = t
+                # --- MODIFICADO (P2): No reconstruir FTS/MM al cargar ---
                 for col, typ in getattr(t, "index_specs", []):
                     if typ.upper() == "FTS" or typ.upper().startswith("MM_BOVW"):
                         continue 
@@ -743,6 +752,8 @@ class Engine:
     def _make_predicate(self, schema: List[Tuple[str, str, int]], cond: Optional[Dict[str, Any]]) -> Callable[[List[Any]], bool]:
         if cond is None:
             return lambda row: True
+        
+        # --- MODIFICADO (P2): Mover esto *después* del check de None ---
         name_pos = _name_to_pos(schema)
         op = cond["op"]
         
@@ -781,6 +792,7 @@ class Engine:
             return _dist_ok
 
         return lambda row: True
+    # --- FIN MODIFICADO (P2) ---
 
     def _rewrite_table_file(self, t: Table, rows: List[List[Any]]) -> None:
         rm = t.record_manager

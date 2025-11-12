@@ -117,18 +117,13 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
                     "k": w.get("k") 
                 }
                 
-        # --- INICIO DE LA SOLUCIÓN ---
-        # Corregir el manejo de 'limit'.
-        # plan.get("limit") puede devolver None (si la clave existe)
-        # Usamos 'or 100' para asegurar que el default (100) se use si 'limit' es None.
         return {
             "action": "select", 
             "table": plan["table_name"], 
             "columns": ["*"], 
             "condition": cond,
-            "limit": plan.get("limit") or 100
+            "limit": plan.get("limit") or 100 
         }
-        # --- FIN DE LA SOLUCIÓN ---
 
     if cmd == "DELETE":
         w = plan.get("where")
@@ -164,15 +159,18 @@ async def run_sql(payload: SQLPayload):
             
             plan_parser = await run_in_threadpool(_parser.parse, s)
 
-            if plan_parser.get("where", {}).get("op") == "MM_SIM":
+            # --- INICIO DE LA SOLUCIÓN ---
+            # Esta es la línea corregida.
+            # Verificamos que 'where' no sea None ANTES de intentar acceder a 'op'
+            where_clause = plan_parser.get("where")
+            if where_clause and where_clause.get("op") == "MM_SIM":
+            # --- FIN DE LA SOLUCIÓN ---
                 raise ValueError("Las consultas de similitud (<->) deben hacerse "
                                  "cargando una imagen de consulta en la sección "
                                  "'Consulta Multimedia'.")
             
             plan_engine = await run_in_threadpool(_adapt_plan_for_engine, plan_parser)
-            
             result = await run_in_threadpool(get_engine().execute, plan_engine)
-            
             results.append({"sql": s, "result": result})
 
         end_time = time.time()
@@ -187,6 +185,7 @@ async def run_sql(payload: SQLPayload):
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {ve}")
     except Exception as e:
+        # Aquí es donde se captura el 'NoneType' object has no attribute 'get'
         raise HTTPException(status_code=500, detail=f"Error de servidor: {e}")
 
 @app.post("/api/sql_mm_query")

@@ -18,7 +18,7 @@ class SQLParser:
             re.IGNORECASE | re.DOTALL
         )
         
-        # MODIFICADO: Añadido LIMIT
+        # --- MODIFICADO (P2): Añadido LIMIT opcional ---
         self.re_select = re.compile(
             r"SELECT \* FROM (\w+)(?:\s+WHERE\s+(.*?))?(?:\s+LIMIT\s+(\d+))?",
             re.IGNORECASE | re.DOTALL
@@ -39,13 +39,11 @@ class SQLParser:
             re.IGNORECASE | re.VERBOSE
         )
         
+        # --- NUEVO (P2): Regex para FTS y MM ---
         self.re_create_fts_index = re.compile(
             r"CREATE\s+FTS\s+INDEX\s+ON\s+(\w+)\s*\((.*?)\)",
             re.IGNORECASE | re.DOTALL
         )
-        
-        # --- NUEVO: CREATE MM INDEX ---
-        # Captura: CREATE MM INDEX ON tabla(col) TYPE BOVW K=128
         self.re_create_mm_index = re.compile(
             r"CREATE\s+MM\s+INDEX\s+ON\s+(\w+)\s*\((\w+)\)\s+TYPE\s+BOVW\s+K=(\d+)",
             re.IGNORECASE
@@ -80,11 +78,11 @@ class SQLParser:
         if match:
             return self._parse_create_index(match.group(1), match.group(2), match.group(3), match.group(4))
 
+        # --- NUEVO (P2): Parseo de FTS y MM ---
         match = self.re_create_fts_index.fullmatch(sql)
         if match:
             return self._parse_create_fts_index(match.group(1), match.group(2))
 
-        # --- NUEVO: Parseo de CREATE MM INDEX ---
         match = self.re_create_mm_index.fullmatch(sql)
         if match:
             return self._parse_create_mm_index(match.group(1), match.group(2), match.group(3))
@@ -95,6 +93,7 @@ class SQLParser:
 
         match = self.re_select.fullmatch(sql)
         if match:
+            # --- MODIFICADO (P2): Pasar limit_str (grupo 3) ---
             return self._parse_select(match.group(1), match.group(2), match.group(3))
 
         match = self.re_delete.fullmatch(sql)
@@ -106,18 +105,13 @@ class SQLParser:
     # ----------------- helpers internos -----------------
 
     def _split_args(self, s: str) -> List[str]:
-        """
-        Divide 'a, "b, c", 'd', 12' por comas SOLO cuando están fuera de comillas.
-        """
         out, buf = [], []
-        q = None  # comilla abierta: "'" o '"'
+        q = None  
         i, n = 0, len(s)
         while i < n:
             ch = s[i]
             if q is not None:
-                # estamos dentro de comillas
                 if ch == q:
-                    # soporta comillas duplicadas '' o ""
                     if i + 1 < n and s[i + 1] == q:
                         buf.append(q)
                         i += 2
@@ -129,7 +123,6 @@ class SQLParser:
                 i += 1
                 continue
 
-            # fuera de comillas
             if ch in ("'", '"'):
                 q = ch
                 i += 1
@@ -209,19 +202,18 @@ class SQLParser:
         plan['values'] = [self._cast_value(p) for p in parts]
         return plan
 
-    # --- MÉTODO _parse_select MODIFICADO (SOLUCIÓN 3) ---
+    # --- MODIFICADO (P2): Aceptar limit_str y parsear FTS/MM ---
     def _parse_select(self, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
         plan = {
             'command': 'SELECT',
             'table_name': table_name,
             'where': None,
-            'limit': int(limit_str) if limit_str else None
+            'limit': int(limit_str) if limit_str else None # <-- Asigna None si no hay limit
         }
         if not where_str:
             return plan
 
-        # --- INICIO DE LA SOLUCIÓN ---
-        # Modificar regex para capturar opcionalmente 'USING K=...'
+        # --- NUEVO (P2): Parseo de MM Similitud (<->) ---
         match_mm = re.match(
             r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?", 
             where_str, 
@@ -231,13 +223,13 @@ class SQLParser:
             k_value = match_mm.group(3)
             plan['where'] = {
                 'column': match_mm.group(1),
-                'op': 'MM_SIM', # Nuevo operador Multimedia Similarity
+                'op': 'MM_SIM', 
                 'query_path': match_mm.group(2),
-                'k': int(k_value) if k_value else None # Añadir K al plan
+                'k': int(k_value) if k_value else None 
             }
             return plan
-        # --- FIN DE LA SOLUCIÓN ---
 
+        # --- NUEVO (P2): Parseo de FTS (@@) ---
         match_fts = re.match(r"(\w+)\s*@@\s*'(.*?)'", where_str, re.IGNORECASE | re.DOTALL)
         if match_fts:
             plan['where'] = {
@@ -318,8 +310,8 @@ class SQLParser:
             'index_type': index_type
         }
     
+    # --- NUEVO (P2): Parseo de FTS y MM ---
     def _parse_create_fts_index(self, table_name: str, cols_str: str) -> Dict[str, Any]:
-        """ Parsea CREATE FTS INDEX ON t(col1, col2) """
         columns = [col.strip() for col in cols_str.split(',')]
         if not columns:
             raise ValueError("CREATE FTS INDEX debe especificar al menos una columna.")
@@ -330,42 +322,36 @@ class SQLParser:
             'columns': columns
         }
 
-    # --- NUEVO: Parseo de CREATE MM INDEX ---
     def _parse_create_mm_index(self, table_name: str, col_name: str, k_str: str) -> Dict[str, Any]:
-        """ Parsea CREATE MM INDEX ON t(col) TYPE BOVW K=128 """
         return {
             'command': 'CREATE_MM_INDEX',
             'table_name': table_name,
             'column': col_name.strip(),
             'k': int(k_str)
         }
+    # --- FIN NUEVO (P2) ---
 
     def _cast_value(self, value: str) -> Any:
         value = value.strip()
 
-        # String entre comillas
         if (value.startswith("'") and value.endswith("'")) or \
            (value.startswith('"') and value.endswith('"')):
             return value[1:-1]
 
-        # Tupla para RTree
         if value.startswith('(') and value.endswith(')'):
             try:
                 return tuple(float(p) for p in value.strip('()').split(','))
             except Exception:
                 pass
 
-        # Float
         try:
             return float(value)
         except ValueError:
             pass
 
-        # Int
         try:
             return int(value)
         except ValueError:
             pass
 
-        # Fallback string crudo
         return value
