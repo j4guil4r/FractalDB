@@ -3,3 +3,5 @@ uvicorn[standard]
 rtree
 python-multipart
 nltk
+opencv-contrib-python
+numpy

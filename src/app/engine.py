@@ -7,10 +7,19 @@ import io
 import csv
 import os
 import re
+import time
+import glob # <--- NUEVO
 
-# --- NUEVOS IMPORTS ---
+# --- NUEVOS IMPORTS FTS ---
 from src.indices.inverted_index.builder import InvertedIndexBuilder
 from src.indices.inverted_index.query import InvertedIndexQuery
+
+# --- NUEVOS IMPORTS MULTIMEDIA ---
+from src.multimedia.codebook_builder import CodebookBuilder
+from src.multimedia.histogram_builder import BoVWHistogramBuilder
+from src.multimedia.knn_search import KNNSearch # (Para KNN Secuencial)
+from src.multimedia.inverted_index_builder_mm import MMInvertedIndexBuilder
+from src.multimedia.inverted_index_query_mm import MMInvertedIndexQuery
 # --- FIN NUEVOS IMPORTS ---
 
 
@@ -81,25 +90,52 @@ class Engine:
         os.makedirs(self.data_dir, exist_ok=True)
         self.idx = IndexManager()
         
-        # --- MODIFICADO: Cargar FTS ---
+        # --- MODIFICADO: Cargar todos los módulos de consulta ---
         self.fts_query: Optional[InvertedIndexQuery] = None
-        self._load_fts_query_module()
+        # Módulos de consulta MM (KNN Indexado), cacheados por K
+        self.mm_query_modules: Dict[int, MMInvertedIndexQuery] = {}
+        # Módulos de consulta MM (KNN Secuencial), cacheados por K
+        self.knn_seq_search: Dict[int, KNNSearch] = {}
+        
+        self._load_query_modules()
             
-    def _load_fts_query_module(self):
-        """ Carga o recarga el módulo de consulta FTS. """
+    def _load_query_modules(self):
+        """ Carga/Recarga todos los módulos de consulta FTS y MM disponibles. """
+        
+        # 1. Cargar FTS
         try:
-            # Cierra el archivo anterior si existe
-            if self.fts_query:
-                self.fts_query.close()
-                
+            if self.fts_query: self.fts_query.close()
             self.fts_query = InvertedIndexQuery(data_dir=self.data_dir)
-            print("Motor: Módulo de consulta FTS cargado/recargado.")
+            print("Motor: Módulo de consulta FTS cargado.")
         except FileNotFoundError:
             print("Motor: Índice FTS no encontrado. Las consultas @@ fallarán.")
             self.fts_query = None
         except Exception as e:
-            print(f"Motor: Error al cargar el módulo FTS: {e}")
+            print(f"Motor: Error al cargar módulo FTS: {e}")
             self.fts_query = None
+        
+        # 2. Cargar MM (KNN Indexado)
+        # Limpiar módulos existentes
+        for mod in self.mm_query_modules.values(): mod.close()
+        self.mm_query_modules.clear()
+        
+        # Buscar todos los metadatos de índices MM
+        meta_pattern = os.path.join(self.data_dir, "mm_inverted_index_k*.meta")
+        for meta_path in glob.glob(meta_pattern):
+            try:
+                # Extraer K del nombre de archivo (ej. mm_inverted_index_k128.meta)
+                k_str = re.search(r"_k(\d+)\.meta$", meta_path)
+                if k_str:
+                    k = int(k_str.group(1))
+                    if k not in self.mm_query_modules:
+                        print(f"Motor: Detectado índice MM K={k}. Cargando...")
+                        self.mm_query_modules[k] = MMInvertedIndexQuery(k_clusters=k, data_dir=self.data_dir)
+            except Exception as e:
+                print(f"Motor: Error al cargar índice MM desde {meta_path}: {e}")
+
+        # 3. Cargar MM (KNN Secuencial)
+        # (No se precargan, se cargan bajo demanda si es necesario)
+        self.knn_seq_search.clear()
 
     # ---------- API pública ----------
     def execute(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,10 +152,12 @@ class Engine:
             return self._select(stmt)
         if act == "create_index":
             return self._create_index_action(stmt)
-        
-        # --- NUEVO: Hook para CREATE_FTS_INDEX ---
         if act == "create_fts_index":
             return self._create_fts_index(stmt)
+            
+        # --- NUEVO: Hook para CREATE_MM_INDEX ---
+        if act == "create_mm_index":
+            return self._create_mm_index(stmt)
             
         if act == "drop_index":
             return self._drop_index_action(stmt)
@@ -139,10 +177,8 @@ class Engine:
 
         inserted = 0
         for r in rows:
-            # INSERT REAL (lo tenías comentado)
             values = self._cast_row_to_schema(r, t.schema)
             rid = t.insert_record(values)
-            # actualiza índices en línea (si prefieres rendimiento, reconstruye al final)
             self.idx.on_insert(t, rid, values)
             inserted += 1
 
@@ -223,7 +259,6 @@ class Engine:
     def _compile_casters(self, schema):
         casters = []
         for _name, base_type, length in schema:
-            # Cuidado: usar default bindings para evitar cierre lento
             if base_type == "INT":
                 casters.append(lambda v, _int=int: _int(v) if v != "" else 0)
             elif base_type == "FLOAT":
@@ -237,8 +272,6 @@ class Engine:
         return casters
 
     def _cast_row_fast(self, row_tuple, casters):
-        # Funciona con tuplas de pandas y con listas de csv.reader
-        # No ramifica por columna; aplica el caster ya vinculado
         return [f(v) for f, v in zip(casters, row_tuple)]
 
 
@@ -248,7 +281,6 @@ class Engine:
         if name in self.catalog:
             raise ValueError(f"La tabla '{name}' ya existe")
 
-        # stmt["columns"] = [{"name","type","key","index"}]
         schema_triples: List[Tuple[str, str, int]] = []
         declared_indexes: List[Tuple[str, str]] = []  # (col_name, index_type)
 
@@ -261,7 +293,6 @@ class Engine:
         t = Table(name, schema=schema_triples, data_dir=self.data_dir)
         self.catalog[name] = t
 
-        # Construir índices declarados
         for col_name, idx_type in declared_indexes:
             self.idx.create_index(t, col_name, idx_type)
 
@@ -274,12 +305,6 @@ class Engine:
         return {"ok": True}
 
     def _create_table_from_file(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        CREATE TABLE X FROM FILE "ruta.csv" USING INDEX BTREE("col");
-        - Infiero tipos a partir de una muestra
-        - Inserto en streaming (sin on_insert por fila)
-        - Creo el índice al final
-        """
         name = stmt["table"]
         file_path = stmt["file"]
         index_type = stmt["index_type"].upper()
@@ -290,7 +315,6 @@ class Engine:
         if name in self.catalog or os.path.exists(os.path.join(self.data_dir, f"{name}.meta")):
             raise ValueError(f"La tabla '{name}' ya existe. Borra los archivos en data/ o usa otro nombre.")
 
-        # 1) Primera pasada: leo header + muestra para inferir
         sample_rows = []
         with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.reader(f)
@@ -303,12 +327,9 @@ class Engine:
                     break
 
         schema = self._infer_schema_from_rows(header, sample_rows)
-
-        # 2) Creo tabla con el esquema inferido
         t = Table(name, schema=schema, data_dir=self.data_dir)
         self.catalog[name] = t
 
-        # 3) Segunda pasada: inserción en streaming (sin actualizar índices por fila)
         inserted = 0
         with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.reader(f)
@@ -320,10 +341,8 @@ class Engine:
                 t.insert_record(values)
                 inserted += 1
 
-        # 4) Construyo el índice solicitado una sola vez al final
         self.idx.create_index(t, index_col, index_type)
 
-        # 5) Guardo spec en metadata para reconstrucción futura
         if not hasattr(t, "index_specs"):
             t.index_specs = []
         if (index_col, index_type) not in t.index_specs:
@@ -352,18 +371,11 @@ class Engine:
             else:
                 kept.append(row)
 
-        # Reescribir archivo y reconstruir índices
         self._rewrite_table_file(t, kept)
         self.idx.rebuild_all(t)
         return {"ok": True, "deleted": deleted}
 
-    # --- NUEVA FUNCIÓN: Generador de documentos para FTS ---
     def _make_doc_iterator(self, t: Table, text_columns: List[str]) -> Iterator[Tuple[int, str]]:
-        """
-        Crea un generador que escanea una tabla y concatena las columnas
-        de texto especificadas para el constructor FTS.
-        Produce (rid, full_text).
-        """
         name_pos = _name_to_pos(t.schema)
         pos_to_concat = []
         for col_name in text_columns:
@@ -374,24 +386,17 @@ class Engine:
         print(f"Iterador FTS: Concatenando columnas en posiciones: {pos_to_concat}")
 
         for rid, row_tuple in t.scan() or []:
-            # Concatena todos los campos de texto en un solo bloque
             full_text = " ".join(str(row_tuple[p]) for p in pos_to_concat)
             yield (rid, full_text)
 
-    # --- NUEVA FUNCIÓN: Acción para crear FTS ---
     def _create_fts_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         table_name = stmt["table"]
         columns = stmt["columns"]
         
         print(f"Iniciando construcción de FTS INDEX para {table_name} en columnas: {columns}")
-        
         t = self._get_table(table_name)
         
-        # 1. Crear el iterador de documentos
         doc_iterator = self._make_doc_iterator(t, columns)
-        
-        # 2. Instanciar y ejecutar el constructor
-        # Asumimos que el constructor FTS vive en el data_dir raíz
         builder = InvertedIndexBuilder(data_dir=self.data_dir)
         
         start_time = time.time()
@@ -400,8 +405,7 @@ class Engine:
         
         total_docs = builder.total_docs
         
-        # 3. Recargar el módulo de consulta para que esté disponible
-        self._load_fts_query_module()
+        self._load_query_modules() # Recargar todos los módulos
         
         return {
             "ok": True,
@@ -410,18 +414,86 @@ class Engine:
             "time_taken_sec": (end_time - start_time)
         }
 
-    # --- MODIFICADO: _select ---
+    # --- NUEVO: Iterador para MM ---
+    def _make_image_iterator(self, t: Table, img_col_name: str) -> Iterator[Tuple[int, str]]:
+        """
+        Crea un generador que escanea una tabla y produce (rid, image_path).
+        Asume que la columna especificada contiene la RUTA al archivo de imagen.
+        """
+        try:
+            pos = _name_to_pos(t.schema)[img_col_name]
+        except KeyError:
+            raise ValueError(f"La columna de imagen '{img_col_name}' no existe en la tabla '{t.name}'.")
+            
+        print(f"Iterador MM: Leyendo rutas de imagen desde la columna '{img_col_name}' (pos {pos})")
+
+        for rid, row_tuple in t.scan() or []:
+            path = str(row_tuple[pos])
+            # Validar que la ruta sea una ruta de archivo razonable
+            if path and (path.endswith('.jpg') or path.endswith('.png') or path.endswith('.jpeg')):
+                yield (rid, path)
+
+    # --- NUEVO: Acción para crear MM INDEX ---
+    def _create_mm_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
+        table_name = stmt["table"]
+        column_name = stmt["column"]
+        k = stmt["k"]
+        
+        print(f"Iniciando construcción de MM INDEX (BoVW K={k}) para {table_name} en columna: {column_name}")
+        t = self._get_table(table_name)
+        start_time = time.time()
+
+        # --- Pipeline completo de BoVW ---
+        
+        # 1. Crear iterador de rutas de imagen
+        print("Paso 1/4: Escaneando rutas de imágenes...")
+        image_paths_tuples = list(self._make_image_iterator(t, column_name))
+        image_paths_only = [path for _rid, path in image_paths_tuples]
+        
+        if not image_paths_only:
+            raise ValueError("No se encontraron rutas de imagen válidas (.jpg, .png) en la columna especificada.")
+
+        # 2. Construir el Codebook (K-Means)
+        print(f"Paso 2/4: Construyendo Codebook (K={k})...")
+        cb = CodebookBuilder(k, self.data_dir)
+        cb.build_from_paths(image_paths_only) # Entrena K-Means
+        
+        # 3. Construir el Índice Invertido MM (SPIMI)
+        print("Paso 3/4: Construyendo Índice Invertido MM...")
+        hist_builder = BoVWHistogramBuilder(k, self.data_dir)
+        mm_idx_builder = MMInvertedIndexBuilder(self.data_dir, k_clusters=k)
+        
+        # Creamos un generador de histogramas
+        def hist_generator() -> Iterator[Tuple[int, np.ndarray]]:
+            print("  -> Iniciando generador de histogramas...")
+            for rid, path in image_paths_tuples:
+                hist_tf = hist_builder.create_histogram_from_path(path)
+                if hist_tf is not None:
+                    yield (rid, hist_tf)
+        
+        mm_idx_builder.build(hist_generator())
+        
+        # 4. Recargar módulos de consulta
+        print("Paso 4/4: Recargando módulos de consulta.")
+        self._load_query_modules()
+        
+        end_time = time.time()
+        
+        return {
+            "ok": True,
+            "message": f"Índice Multimedia (BoVW K={k}) construido exitosamente.",
+            "total_images_indexed": mm_idx_builder.total_docs,
+            "codebook_size": k,
+            "time_taken_sec": (end_time - start_time)
+        }
+
     def _select(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
         cols = stmt.get("columns", ["*"])
         cond = stmt.get("condition")
-        
-        # --- MODIFICADO: Obtener K (limit) ---
-        limit_k = stmt.get("limit", 100) # Default a 100 si no se especifica
-        
+        limit_k = stmt.get("limit", 100)
         name_pos = _name_to_pos(t.schema)
 
-        # Proyección
         if cols == ["*"]:
             proj_pos = list(range(len(t.schema)))
             proj_names = [n for n, _t, _l in t.schema]
@@ -429,138 +501,126 @@ class Engine:
             proj_pos = [name_pos[c] for c in cols]
             proj_names = cols
 
-        # Planner ultra básico: intenta usar índice antes que scan
         if cond:
             op = cond["op"]
 
-            # --- NUEVA LÓGICA FTS ---
-            if op == "FTS":
-                if not self.fts_query:
-                    return {"ok": False, "rows": [], "columns": [], "error": "FTS index not found. Use CREATE FTS INDEX ON table(cols) first."}
+            # --- NUEVA LÓGICA MM_SIM ---
+            if op == "MM_SIM":
+                if not self.mm_query_modules:
+                    return {"ok": False, "rows": [], "columns": [], "error": "Índice MM no encontrado. Use CREATE MM INDEX ON ..."}
                 
-                query_text = cond["query_text"]
-                # Usamos el K del LIMIT
-                # fts_query.query() devuelve: [(score, docID), ...]
-                results = self.fts_query.query(query_text, k=limit_k)
+                # Por ahora, usamos el primer módulo MM cargado.
+                # En una versión avanzada, se podría seleccionar por 'k'
+                if not self.mm_query_modules:
+                     return {"ok": False, "error": "No hay índices MM cargados."}
+                
+                query_module = list(self.mm_query_modules.values())[0]
+                k_used = query_module.k
+                
+                query_path = cond["query_path"]
+                
+                if not os.path.exists(query_path):
+                     return {"ok": False, "error": f"Archivo de consulta no encontrado: {query_path}"}
+
+                results = query_module.query_by_path(query_path, k=limit_k)
                 
                 rows = []
-                # Añadimos 'score' a las columnas
                 final_columns = ["score"] + proj_names
                 
                 for score, rid in results:
                     try:
                         record_tuple = t.get_record(rid)
                         projected_row = [record_tuple[p] for p in proj_pos]
-                        # Prepend el score formateado
                         rows.append(["{:.6f}".format(score)] + projected_row)
                     except (IOError, IndexError):
-                        # El registro podría no existir si el índice está desactualizado
                         continue
                         
+                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": f"MM_BOVW_INV (K={k_used})", "column": cond["field"]}}
+
+            if op == "FTS":
+                if not self.fts_query:
+                    return {"ok": False, "rows": [], "columns": [], "error": "FTS index not found."}
+                query_text = cond["query_text"]
+                results = self.fts_query.query(query_text, k=limit_k)
+                rows = []
+                final_columns = ["score"] + proj_names
+                for score, rid in results:
+                    try:
+                        record_tuple = t.get_record(rid)
+                        projected_row = [record_tuple[p] for p in proj_pos]
+                        rows.append(["{:.6f}".format(score)] + projected_row)
+                    except (IOError, IndexError):
+                        continue
                 return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": "FTS", "column": cond["field"]}}
             
-            # ----- "=" y BETWEEN e IN 1D -----
             if op in ("=", "BETWEEN", "IN"):
                 field = cond["field"]
-
                 if op == "=":
                     kind, payload = self.idx.probe_eq(t.name, field, cond["value"])
-                    if kind == 'records':
-                        rows = [[rec[p] for p in proj_pos] for rec in payload]
-                    elif kind == 'rids':
-                        rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
-                    else:
-                        rows = None
-
+                    if kind == 'records': rows = [[rec[p] for p in proj_pos] for rec in payload]
+                    elif kind == 'rids': rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
+                    else: rows = None
                     if rows is not None:
                         idx_inst = self.idx.list_for_table(t.name).get(field, None)
                         used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
-
+                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used}
                 elif op == "BETWEEN":
                     kind, payload = self.idx.probe_between(t.name, field, cond["low"], cond["high"])
-                    if kind == 'records':
-                        rows = [[rec[p] for p in proj_pos] for rec in payload]
-                    elif kind == 'rids':
-                        rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
-                    else:
-                        rows = None
-
+                    if kind == 'records': rows = [[rec[p] for p in proj_pos] for rec in payload]
+                    elif kind == 'rids': rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
+                    else: rows = None
                     if rows is not None:
                         idx_inst = self.idx.list_for_table(t.name).get(field, None)
                         used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
-
+                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used}
                 elif op == "IN":
-                    kind, payload = self.idx.probe_rtree_radius(
-                        t.name, field, cond["coords"], cond["radius"]
-                    )
+                    kind, payload = self.idx.probe_rtree_radius(t.name, field, cond["coords"], cond["radius"])
                     if kind == 'rids':
                         rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
                         idx_inst = self.idx.list_for_table(t.name).get(field, None)
                         used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
-
-            # ----- IN2: RTREE 2D sobre (lat,lon) -----
+                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used}
+            
             if op == "IN2":
-                fields = cond["fields"]        # ['latitude', 'longitude']
-                synthetic = ",".join(fields)   # "latitude,longitude"
-
-                kind, payload = self.idx.probe_rtree_radius(
-                    t.name,
-                    synthetic,
-                    cond["coords"],
-                    cond["radius"],
-                )
+                fields = cond["fields"]; synthetic = ",".join(fields)
+                kind, payload = self.idx.probe_rtree_radius(t.name, synthetic, cond["coords"], cond["radius"])
                 if kind == 'rids':
                     rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
                     idx_inst = self.idx.list_for_table(t.name).get(synthetic, None)
                     used = {"column": synthetic, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
+                    return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used}
 
-        # Fallback: scan con predicado (sin índice)
+        # Fallback: scan
         pred = self._make_predicate(t.schema, cond)
         rows: List[List[Any]] = []
         count = 0
         for _rid, row_tuple in t.scan() or []:
-            if count >= limit_k: # <-- MODIFICADO: Aplicar LIMIT también al scan
+            if count >= limit_k:
                 break
             row = list(row_tuple)
             if pred(row):
                 rows.append([row[p] for p in proj_pos])
                 count += 1
-                
         return {"ok": True, "rows": rows, "columns": proj_names}
 
     
     def _create_index_action(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
-        # 👇 Normalizar a lista
         cols = stmt.get("columns")
         if cols is None:
             col = stmt.get("column")
             cols = [col] if isinstance(col, str) else (col or [])
         elif isinstance(cols, str):
             cols = [cols]
-
-        if not cols:
-            raise ValueError("CREATE INDEX: faltan columnas")
-
+        if not cols: raise ValueError("CREATE INDEX: faltan columnas")
         typ = stmt["index_type"]
-
-        # crea el índice (IndexManager ya acepta lista o 1 col)
         self.idx.create_index(t, cols, typ)
-
-        # persistir spec SIEMPRE como ["col"] o ["lat,lon"]
         key_str = ",".join(cols)
-
-        if not hasattr(t, "index_specs"):
-            t.index_specs = []
+        if not hasattr(t, "index_specs"): t.index_specs = []
         spec_item = [key_str, typ]
         if spec_item not in t.index_specs:
             t.index_specs.append(spec_item)
             t._save_metadata()
-
         return {"ok": True}
 
 
@@ -568,7 +628,6 @@ class Engine:
         t = self._get_table(stmt["table"])
         col = stmt["column"]
         self.idx.drop_index(t, col)
-        # actualiza metadata
         t.index_specs = [(c, ty) for (c, ty) in getattr(t, "index_specs", []) if c != col]
         t._save_metadata()
         return {"ok": True}
@@ -583,9 +642,7 @@ class Engine:
                 self.catalog[name] = t
                 # reconstruir índices declarados en metadata
                 for col, typ in getattr(t, "index_specs", []):
-                    # Evitar reconstruir FTS aquí, se maneja globalmente
-                    if typ.upper() == "FTS":
-                        continue
+                    if typ.upper() == "FTS": continue
                     cols_list = col.split(',')
                     self.idx.create_index(t, cols_list, typ)
             else:
@@ -615,9 +672,9 @@ class Engine:
         name_pos = _name_to_pos(schema)
         op = cond["op"]
         
-        # FTS no se puede aplicar como predicado de scan, se maneja arriba
-        if op == "FTS":
-            return lambda row: True # (No debería llegar aquí)
+        # Nuevas ops no se aplican en scan
+        if op == "FTS" or op == "MM_SIM":
+            return lambda row: True # Se manejan por índice
 
         field = cond["field"]
         pos = name_pos[field]
@@ -639,7 +696,6 @@ class Engine:
         if op == "IN":
             coords = tuple(cond["coords"])
             radius = float(cond["radius"])
-            # Distancia euclídea con parseo de cadena "[x, y]".
             def _dist_ok(row):
                 v = _parse_coords_from_value(row[pos])
                 if v is None or len(v) != len(coords):
@@ -648,7 +704,7 @@ class Engine:
                 for a, b in zip(v, coords):
                     d = (a - b)
                     s += d * d
-                return s <= radius * radius  # sin sqrt
+                return s <= radius * radius
             return _dist_ok
 
         return lambda row: True

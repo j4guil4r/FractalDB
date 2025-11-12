@@ -41,6 +41,15 @@
     .dialog h3{ margin:0; font-size:16px }
     .close{ border-radius:10px; padding:6px 10px; cursor:pointer; border:1px solid rgba(0,229,255,.35); background: rgba(0,229,255,.09); color:#9feaff }
     .note{ color:#8aa0b3; font-size:12px; margin:6px 0 0 }
+    
+    /* --- NUEVO: CSS para render de imagen --- */
+    td img.thumbnail {
+        max-width: 150px;
+        max-height: 150px;
+        height: auto;
+        border-radius: 8px;
+        object-fit: cover;
+    }
   </style>
 </head>
 <body>
@@ -51,7 +60,7 @@
     </header>
 
     <section>
-      <h2 style="margin:0 0 8px; font-size:16px;">Carga rápida de datos</h2>
+      <h2 style="margin:0 0 8px; font-size:16px;">Carga de Datos (.csv)</h2>
       <div class="grid">
         <div class="cols">
           <input id="tableName" type="text" placeholder="Nombre de tabla" required />
@@ -88,6 +97,21 @@
     </section>
 
     <section style="margin-top:22px;">
+      <h2 style="margin:0 0 8px; font-size:16px;">Consulta Multimedia (BoVW)</h2>
+      <div class="grid">
+        <input id="queryFileInput" type="file" accept="image/jpeg,image/png" hidden />
+        <div id="queryDropZone" class="dropzone">
+          <span id="queryDzLabel">Arrastra tu **imagen de consulta** aquí o haz clic</span>
+        </div>
+      </div>
+      <p class="muted" style="margin-top: 4px;">
+        Luego, ejecuta una consulta SQL como: 
+        <code style="color: var(--accent-2);">SELECT * FROM ... WHERE img_col &lt;-&gt; 'query_file' LIMIT 10;</code>
+      </p>
+    </section>
+
+
+    <section style="margin-top:22px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <h2 style="margin:0; font-size:16px;">SQL</h2>
         <div class="quick" style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -109,7 +133,7 @@
     </section>
 
     <footer style="margin:28px 0 6px; color:#8aa0b3; font-size:12px;">
-      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE, FTS</span>
+      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE, FTS, MM_BOVW</span>
     </footer>
   </div>
 
@@ -135,13 +159,33 @@
       $('#out').innerHTML = `<pre style="color:#ff4d6d">${detail}</pre>`;
       $('#executionTime').innerHTML = ''; // Limpiar tiempo si hay error
     }
+    
+    // --- MODIFICADO: renderTable ---
     function renderTable(columns, rows) {
+      // Función helper para chequear si es una ruta de imagen
+      const isImagePath = (s) => (typeof s === 'string' && (s.endsWith('.jpg') || s.endsWith('.png') || s.endsWith('.jpeg')));
+
       const head = `<tr>${columns.map(c=>`<th>${c}</th>`).join('')}</tr>`;
-      const body = rows.map(r=>`<tr>${r.map(v=>`<td>${v}</td>`).join('')}</tr>`).join('');
+      
+      const body = rows.map(r => {
+        const cells = r.map(v => {
+          // Si es una ruta de imagen, renderizar como <img>
+          if (isImagePath(v)) {
+            // Asumimos que la ruta es relativa al servidor o es un enlace
+            // Para rutas de disco locales (ej. C:\...) esto no funcionará
+            // pero si los datos en el CSV son enlaces web, sí.
+            // Para la consulta, el servidor debe devolver una ruta web.
+            return `<td><img src="${v}" class="thumbnail" alt="${v}" loading="lazy"></td>`;
+          }
+          return `<td>${v}</td>`;
+        }).join('');
+        return `<tr>${cells}</tr>`;
+      }).join('');
+      
       return `<table>${head}${body}</table>`;
     }
 
-    // ---------- dropzone ----------
+    // ---------- dropzone (CSV) ----------
     const dz = $('#dropZone');
     const fileInput = $('#fileInput');
     let pickedFile = null;
@@ -167,60 +211,101 @@
       $('#dzLabel').textContent = `Archivo listo: ${f.name}`;
     });
 
-    // ---------- API ----------
+    // --- NUEVO: Dropzone (Consulta MM) ---
+    const queryDz = $('#queryDropZone');
+    const queryFileInput = $('#queryFileInput');
+    let queryPickedFile = null; // Archivo de imagen para consulta
+
+    queryDz.addEventListener('click', () => queryFileInput.click());
+    queryDz.addEventListener('dragover', e => { e.preventDefault(); queryDz.classList.add('dragover'); });
+    queryDz.addEventListener('dragleave', () => queryDz.classList.remove('dragover'));
+    queryDz.addEventListener('drop', e => {
+      e.preventDefault(); queryDz.classList.remove('dragover');
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { alert('Solo archivos de imagen'); return; }
+      queryPickedFile = f;
+      $('#queryDzLabel').textContent = `Imagen de consulta lista: ${f.name}`;
+    });
+    queryFileInput.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { alert('Solo archivos de imagen'); queryFileInput.value=''; return; }
+      queryPickedFile = f;
+      $('#queryDzLabel').textContent = `Imagen de consulta lista: ${f.name}`;
+    });
+
+
+    // --- MODIFICADO: API (runSQL) ---
     async function runSQL() {
       const query = $('#sql').value;
       const out = $('#out');
       const executionTimeContainer = $('#executionTime');
       
-      // Limpiar resultados anteriores
       out.innerHTML = '';
       executionTimeContainer.innerHTML = '';
       
+      let endpoint = '/api/sql';
+      let body;
+      let headers = {'Content-Type': 'application/json'};
+
+      // 1. Determinar si es una consulta MM
+      if (query.includes('<->')) {
+        if (!queryPickedFile) {
+          return showError("Consulta de similitud detectada (<->), pero no se ha cargado ninguna imagen de consulta.");
+        }
+        
+        // Es una consulta MM: usamos FormData
+        endpoint = '/api/sql_mm_query'; // Nuevo endpoint
+        const fd = new FormData();
+        fd.append('query', query);
+        fd.append('query_file', queryPickedFile);
+        body = fd;
+        headers = {}; // FormData establece su propio Content-Type
+        
+      } else {
+        // Es una consulta normal (Texto, BTree, etc.)
+        body = JSON.stringify({ query });
+      }
+
+      // 2. Ejecutar la llamada
       try {
-        const res = await fetch('/api/sql', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ query })
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: headers,
+          body: body
         });
+        
         let data; try { data = await res.json(); } catch { data = await res.text(); }
         if (!res.ok) return showError(typeof data === 'string' ? data : data.detail || 'Error');
 
-        // --- MODIFICADO: Manejar la nueva estructura de respuesta ---
-        
-        // 1. Mostrar el tiempo de ejecución
+        // 3. Renderizar resultados
         if (data.execution_time) {
-            executionTimeContainer.innerHTML = `Tiempo de ejecución: ${data.execution_time.toFixed(4)} segundos`;
+          executionTimeContainer.innerHTML = `Tiempo de ejecución: ${data.execution_time.toFixed(4)} segundos`;
         }
         
-        // 2. 'data.results' es la respuesta real del motor
         const results = data.results; 
-
         if (results.rows && results.columns) {
-          // Mensaje de índice (FTS o BTree, etc.)
           const idx = results.used_index ? `<p><small>Usó índice: ${results.used_index.type} en ${results.used_index.column}</small></p>` : '';
-                
           const totalRows = results.rows.length;
           const limit = 150;
           const rowsToDisplay = totalRows > limit ? results.rows.slice(0, limit) : results.rows;
           const totalRowsText = totalRows > limit ? `<p>Total de registros retornados: ${totalRows}</p>` : '';
-
           out.innerHTML = idx + totalRowsText + renderTable(results.columns, rowsToDisplay);
         } 
         else {
-              // Para comandos como CREATE, INSERT, etc.
-              out.innerHTML = show(results);
+          out.innerHTML = show(results);
         }
-        // --- FIN DE MODIFICACIÓN ---
 
       } catch (e) { showError('Network/JS error: ' + e); }
-  }
+    }
 
     async function uploadCSV() {
       const table = $('#tableName').value.trim();
       if (!table) return showError('Pon un nombre de tabla.');
       const file = pickedFile;
       if (!file) return showError('Arrastra un .csv o haz clic en el cuadro.');
-
+      
       // UI: preparar barra y timer
       const box = $('#uploadStatus');
       const label = $('#progLabel');
@@ -292,9 +377,7 @@
 
       xhr.onreadystatechange = () => {
         // Cuando termina de subir pero el servidor aún procesa:
-        // forzamos barra "indeterminada" para feedback visual.
         if (xhr.readyState === 2 || xhr.readyState === 3) {
-          // cabeceras recibidas / cargando respuesta
           label.textContent = 'Procesando…';
           bar.classList.add('indeterminate');
           bar.style.width = '100%';
@@ -304,7 +387,6 @@
           clearInterval(tickTimer);
           uploadBtn.disabled = false;
 
-          // Quitar animación indeterminada y dejar la barra llena
           bar.classList.remove('indeterminate');
           bar.style.width = '100%';
 
@@ -372,17 +454,16 @@
       try {
         const res = await fetch('/api/sql', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ query: `SELECT * FROM ${name} LIMIT 200;` }) // <--- Añadido LIMIT 200
+          body: JSON.stringify({ query: `SELECT * FROM ${name} LIMIT 200;` })
         });
         let data; try { data = await res.json(); } catch { data = await res.text(); }
         if (!res.ok) { modalBody.innerHTML = show(typeof data === 'string' ? data : data.detail || 'Error'); return; }
 
-        // --- MODIFICADO: Leer de data.results ---
         const results = data.results;
         if (results && results.rows && results.columns) {
           const MAX = 200;
           const rows = Array.isArray(results.rows) ? results.rows : [];
-          const sliced = rows.slice(0, MAX); // El SQL ya limita, pero por si acaso.
+          const sliced = rows.slice(0, MAX);
           modalBody.innerHTML = renderTable(results.columns, sliced);
           if (rows.length >= MAX) {
             modalNote.textContent = `Mostrando ${rows.length} filas (limitado por consulta).`;

@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 import tempfile, os
 import re, time
+from typing import Dict, Any # <-- Asegurarse de que Dict, Any están importados
 
 from src.parser.sqlparser import SQLParser
 from .engine import get_engine
@@ -66,12 +67,19 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
             "index_type": index_type
         }
     
-    # --- NUEVO: Adaptador para CREATE_FTS_INDEX ---
     if cmd == "CREATE_FTS_INDEX":
         return {
             "action": "create_fts_index",
             "table": plan.get("table_name"),
             "columns": plan.get("columns", [])
+        }
+    
+    if cmd == "CREATE_MM_INDEX":
+        return {
+            "action": "create_mm_index",
+            "table": plan.get("table_name"),
+            "column": plan.get("column"),
+            "k": plan.get("k")
         }
     
     if cmd == "INSERT":
@@ -97,16 +105,17 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
                 }
             elif op == "IN":
                 cond = {"op": "IN", "field": col, "coords": tuple(w.get("point", ())), "radius": float(w.get("radius", 0))}
-            # --- NUEVO: Adaptador para FTS (@@) ---
             elif op == "FTS":
                 cond = {"op": "FTS", "field": col, "query_text": w.get("query_text")}
+            elif op == "MM_SIM":
+                cond = {"op": "MM_SIM", "field": col, "query_path": w.get("query_path")}
                 
         return {
             "action": "select", 
             "table": plan["table_name"], 
             "columns": ["*"], 
             "condition": cond,
-            "limit": plan.get("limit", 100) # <-- MODIFICADO: Pasar el limit
+            "limit": plan.get("limit", 100)
         }
 
     if cmd == "DELETE":
@@ -142,6 +151,14 @@ async def run_sql(payload: SQLPayload):
         results = []
         for s in statements:
             plan_parser = _parser.parse(s)
+            
+            # --- MANEJO DE ERRORES MEJORADO ---
+            # Si es una consulta MM, informar al usuario que use la otra API
+            if plan_parser.get("where", {}).get("op") == "MM_SIM":
+                raise ValueError("Las consultas de similitud (<->) deben hacerse "
+                                 "cargando una imagen de consulta en la sección "
+                                 "'Consulta Multimedia'.")
+            
             plan_engine = _adapt_plan_for_engine(plan_parser)
             results.append({"sql": s, "result": get_engine().execute(plan_engine)})
 
@@ -159,6 +176,62 @@ async def run_sql(payload: SQLPayload):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {e}")
 
+# --- NUEVO ENDPOINT: /api/sql_mm_query ---
+@app.post("/api/sql_mm_query")
+async def run_sql_mm_query(
+    query: str = Form(...),
+    query_file: UploadFile = File(...)
+):
+    """
+    Maneja consultas de similitud multimedia que requieren la carga de un archivo.
+    """
+    tmp_path = None
+    try:
+        # 1. Guardar el archivo de consulta temporalmente
+        # Usamos delete=False para que el engine pueda leer la ruta
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            content = await query_file.read()
+            if not content:
+                raise HTTPException(400, "El archivo de consulta está vacío.")
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        start_time = time.time()
+
+        # 2. Parsear el SQL
+        plan_parser = _parser.parse(query)
+        
+        # 3. Modificar el plan para inyectar la ruta temporal
+        if plan_parser.get("where", {}).get("op") != "MM_SIM":
+            raise ValueError("Este endpoint solo acepta consultas de similitud (<->).")
+            
+        # Inyecta la ruta real del archivo temporal en el plan
+        plan_parser["where"]["query_path"] = tmp_path
+        
+        # 4. Adaptar y Ejecutar
+        plan_engine = _adapt_plan_for_engine(plan_parser)
+        result = get_engine().execute(plan_engine)
+        
+        end_time = time.time()
+        execution_time = end_time - start_time
+
+        response = {
+            "results": result,
+            "execution_time": execution_time
+        }
+        return response
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Error al procesar consulta MM: {ve}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error de servidor en consulta MM: {e}")
+    finally:
+        # 5. Limpiar el archivo temporal
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+# --- FIN NUEVO ENDPOINT ---
+
 @app.post("/api/upload")
 async def upload_csv(
     table: str = Form(...),
@@ -168,7 +241,8 @@ async def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Solo se aceptan CSV")
 
-    # 1) Guardar a un archivo temporal sin cargar todo a RAM
+    # 1) Guardar a un archivo temporal
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
             while True:
@@ -176,11 +250,11 @@ async def upload_csv(
                 if not chunk:
                     break
                 tmp.write(chunk)
-        tmp_path = tmp.name
+            tmp_path = tmp.name
     except Exception as e:
         raise HTTPException(400, f"Error guardando archivo: {e}")
 
-    # 2) Cargar por ruta con inserción en streaming y reconstrucción de índices al final
+    # 2) Cargar por ruta
     try:
         inserted, columns = get_engine().load_csv_path(
             table=table,
@@ -191,8 +265,9 @@ async def upload_csv(
     except Exception as e:
         raise HTTPException(400, f"Error al cargar CSV: {e}")
     finally:
-        try: os.remove(tmp_path)
-        except: pass
+        if tmp_path and os.path.exists(tmp_path):
+            try: os.remove(tmp_path)
+            except: pass
 
 @app.get("/api/tables")
 async def list_tables():
