@@ -50,7 +50,6 @@
       <p class="sub"><small>in-memory catalog • indexed access • query plan executor</small></p>
     </header>
 
-    <!-- Carga rápida de datos -->
     <section>
       <h2 style="margin:0 0 8px; font-size:16px;">Carga rápida de datos</h2>
       <div class="grid">
@@ -60,12 +59,10 @@
           <button id="refreshBtn">Listar tablas</button>
         </div>
 
-        <!-- Dropzone + “file” oculto -->
         <input id="fileInput" type="file" accept=".csv" hidden />
         <div id="dropZone" class="dropzone">
           <span id="dzLabel">Arrastra tu archivo .csv aquí o haz clic para buscar</span>
         </div>
-        <!-- Progreso de carga -->
         <div id="uploadStatus" class="progress hidden" aria-live="polite">
           <div class="progress-head">
             <strong id="progLabel">Listo para subir</strong>
@@ -83,7 +80,6 @@
           <button id="uploadBtn">Subir CSV</button>
         </div>
 
-        <!-- Lista de tablas en chips (no JSON) -->
         <div>
           <div class="muted">Tablas</div>
           <div id="tablesList"></div>
@@ -91,7 +87,6 @@
       </div>
     </section>
 
-    <!-- SQL -->
     <section style="margin-top:22px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <h2 style="margin:0; font-size:16px;">SQL</h2>
@@ -108,17 +103,16 @@
       <div style="margin-top:10px;">
         <button id="runBtn">Ejecutar</button>
       </div>
-      <div id="executionTime" style="margin-top:10px;"></div>
+      <div id="executionTime" style="margin-top:10px; height: 1.5em;"></div>
 
       <div id="out" style="margin-top:12px;"></div>
     </section>
 
     <footer style="margin:28px 0 6px; color:#8aa0b3; font-size:12px;">
-      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE</span>
+      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE, FTS</span>
     </footer>
   </div>
 
-  <!-- Modal para ver tuplas de una tabla -->
   <div id="modal" class="modal" aria-hidden="true">
     <div class="backdrop"></div>
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
@@ -139,6 +133,7 @@
     }
     function showError(detail) {
       $('#out').innerHTML = `<pre style="color:#ff4d6d">${detail}</pre>`;
+      $('#executionTime').innerHTML = ''; // Limpiar tiempo si hay error
     }
     function renderTable(columns, rows) {
       const head = `<tr>${columns.map(c=>`<th>${c}</th>`).join('')}</tr>`;
@@ -177,6 +172,11 @@
       const query = $('#sql').value;
       const out = $('#out');
       const executionTimeContainer = $('#executionTime');
+      
+      // Limpiar resultados anteriores
+      out.innerHTML = '';
+      executionTimeContainer.innerHTML = '';
+      
       try {
         const res = await fetch('/api/sql', {
           method: 'POST', headers: {'Content-Type':'application/json'},
@@ -185,29 +185,33 @@
         let data; try { data = await res.json(); } catch { data = await res.text(); }
         if (!res.ok) return showError(typeof data === 'string' ? data : data.detail || 'Error');
 
-          // Mostrar el tiempo de ejecución
+        // --- MODIFICADO: Manejar la nueva estructura de respuesta ---
+        
+        // 1. Mostrar el tiempo de ejecución
         if (data.execution_time) {
             executionTimeContainer.innerHTML = `Tiempo de ejecución: ${data.execution_time.toFixed(4)} segundos`;
         }
+        
+        // 2. 'data.results' es la respuesta real del motor
+        const results = data.results; 
 
-        if (data.results) {
-          if (data.results.rows && data.results.columns) {
-            const idx = data.results.used_index ? `<p><small>Usó índice: ${data.results.used_index.type} en ${data.results.used_index.column}</small></p>` : '';
+        if (results.rows && results.columns) {
+          // Mensaje de índice (FTS o BTree, etc.)
+          const idx = results.used_index ? `<p><small>Usó índice: ${results.used_index.type} en ${results.used_index.column}</small></p>` : '';
                 
-            const totalRows = data.results.rows.length;
-            const limit = 150;
-            const rowsToDisplay = totalRows > limit ? data.results.rows.slice(0, limit) : data.results.rows;
-            const totalRowsText = totalRows > limit ? `<p>Total de registros retornados: ${totalRows}</p>` : '';
+          const totalRows = results.rows.length;
+          const limit = 150;
+          const rowsToDisplay = totalRows > limit ? results.rows.slice(0, limit) : results.rows;
+          const totalRowsText = totalRows > limit ? `<p>Total de registros retornados: ${totalRows}</p>` : '';
 
-            out.innerHTML = idx + totalRowsText + renderTable(data.results.columns, rowsToDisplay);
-          } 
-          else {
-                out.innerHTML = show(data.results);
-          }
+          out.innerHTML = idx + totalRowsText + renderTable(results.columns, rowsToDisplay);
         } 
         else {
-            out.innerHTML = show(data);
+              // Para comandos como CREATE, INSERT, etc.
+              out.innerHTML = show(results);
         }
+        // --- FIN DE MODIFICACIÓN ---
+
       } catch (e) { showError('Network/JS error: ' + e); }
   }
 
@@ -368,21 +372,23 @@
       try {
         const res = await fetch('/api/sql', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ query: `SELECT * FROM ${name};` })
+          body: JSON.stringify({ query: `SELECT * FROM ${name} LIMIT 200;` }) // <--- Añadido LIMIT 200
         });
         let data; try { data = await res.json(); } catch { data = await res.text(); }
         if (!res.ok) { modalBody.innerHTML = show(typeof data === 'string' ? data : data.detail || 'Error'); return; }
 
-        if (data.rows && data.columns) {
+        // --- MODIFICADO: Leer de data.results ---
+        const results = data.results;
+        if (results && results.rows && results.columns) {
           const MAX = 200;
-          const rows = Array.isArray(data.rows) ? data.rows : [];
-          const sliced = rows.slice(0, MAX);
-          modalBody.innerHTML = renderTable(data.columns, sliced);
-          if (rows.length > MAX) {
-            modalNote.textContent = `Mostrando ${MAX} de ${rows.length} filas (cap en cliente).`;
+          const rows = Array.isArray(results.rows) ? results.rows : [];
+          const sliced = rows.slice(0, MAX); // El SQL ya limita, pero por si acaso.
+          modalBody.innerHTML = renderTable(results.columns, sliced);
+          if (rows.length >= MAX) {
+            modalNote.textContent = `Mostrando ${rows.length} filas (limitado por consulta).`;
           }
         } else {
-          modalBody.innerHTML = show(data.results.columns);
+          modalBody.innerHTML = show(results.columns);
         }
       } catch (e) {
         modalBody.innerHTML = `<pre style="color:#ff4d6d">Network/JS error: ${e}</pre>`;

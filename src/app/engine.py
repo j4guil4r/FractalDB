@@ -2,11 +2,17 @@
 from src.core.table import Table
 from src.indices.manager import IndexManager
 
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, Iterator
 import io
 import csv
 import os
 import re
+
+# --- NUEVOS IMPORTS ---
+from src.indices.inverted_index.builder import InvertedIndexBuilder
+from src.indices.inverted_index.query import InvertedIndexQuery
+# --- FIN NUEVOS IMPORTS ---
+
 
 def _parse_sql_type_to_core(sql_type: str) -> Tuple[str, int]:
     t = sql_type.upper()
@@ -74,99 +80,26 @@ class Engine:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
         self.idx = IndexManager()
-    
-    def _infer_schema_from_rows(self, header, rows, scan_cap=50000):
-        """
-        Devuelve lista de triples (name, base_type, length) para RecordManager.
-        - INT si todos los valores no vacíos son enteros
-        - FLOAT si todos son numéricos (pero alguno no es entero)
-        - DATE (ISO YYYY-MM-DD) se guarda como VARCHAR[10]
-        - Si hay vacíos o mezcla, cae en VARCHAR[ max_len <= 255 ]
-        """
-        if header:
-            names = header
-            ncols = len(header)
-        else:
-            if not rows:
-                raise ValueError("CSV sin header ni filas")
-            ncols = len(rows[0])
-            names = [f"col{i}" for i in range(ncols)]
-
-        int_re = re.compile(r"^-?\d+$")
-        float_re = re.compile(r"^-?\d+(?:\.\d+)?$")
-        date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-        flags = []
-        max_len = [0] * ncols
-        for _ in range(ncols):
-            flags.append({
-                "all_int": True,
-                "all_numeric": True,   # int o float
-                "all_date_iso": True,
-                "any_empty": False,
-                "force_varchar": False,
-            })
-
-        # escanea hasta scan_cap filas para no morir con CSV gigantes
-        for r_i, row in enumerate(rows):
-            if r_i >= scan_cap:
-                break
-            # si filas vienen como strings crudas, bien; si son listas, también
-            for i in range(ncols):
-                val = "" if i >= len(row) else (row[i] if row[i] is not None else "")
-                s = str(val).strip()
-                max_len[i] = max(max_len[i], len(s.encode("utf-8")))
-
-                if s == "":
-                    flags[i]["any_empty"] = True
-                    # tratamos vacío como incompatible con tipos numéricos
-                    flags[i]["all_int"] = False
-                    flags[i]["all_numeric"] = False
-                    # Para fechas también rompe la condición
-                    flags[i]["all_date_iso"] = False
-                    flags[i]["force_varchar"] = True
-                    continue
-
-                if int_re.match(s):
-                    # sigue siendo candidato a int/num; fecha no, a menos que parezca fecha exacta (no lo es)
-                    flags[i]["all_date_iso"] = False
-                    continue
-
-                if float_re.match(s):
-                    # no es int puro
-                    flags[i]["all_int"] = False
-                    flags[i]["all_date_iso"] = False
-                    continue
-
-                if date_re.match(s):
-                    # no es número
-                    flags[i]["all_int"] = False
-                    flags[i]["all_numeric"] = False
-                    continue
-
-                # otro caso: caer a VARCHAR
-                flags[i]["all_int"] = False
-                flags[i]["all_numeric"] = False
-                flags[i]["all_date_iso"] = False
-                flags[i]["force_varchar"] = True
-
-        schema = []
-        for i, name in enumerate(names):
-            f = flags[i]
-            if not f["force_varchar"]:
-                if f["all_int"]:
-                    schema.append((name, "INT", 0))
-                    continue
-                if f["all_numeric"]:
-                    schema.append((name, "FLOAT", 0))
-                    continue
-                if f["all_date_iso"]:
-                    schema.append((name, "VARCHAR", 10))  # DATE ISO se guarda como VARCHAR[10]
-                    continue
-            # VARCHAR con largo máximo observado pero cap a 255
-            length = min(max_len[i] if max_len[i] > 0 else 1, 255)
-            schema.append((name, "VARCHAR", length))
-        return schema
+        
+        # --- MODIFICADO: Cargar FTS ---
+        self.fts_query: Optional[InvertedIndexQuery] = None
+        self._load_fts_query_module()
+            
+    def _load_fts_query_module(self):
+        """ Carga o recarga el módulo de consulta FTS. """
+        try:
+            # Cierra el archivo anterior si existe
+            if self.fts_query:
+                self.fts_query.close()
+                
+            self.fts_query = InvertedIndexQuery(data_dir=self.data_dir)
+            print("Motor: Módulo de consulta FTS cargado/recargado.")
+        except FileNotFoundError:
+            print("Motor: Índice FTS no encontrado. Las consultas @@ fallarán.")
+            self.fts_query = None
+        except Exception as e:
+            print(f"Motor: Error al cargar el módulo FTS: {e}")
+            self.fts_query = None
 
     # ---------- API pública ----------
     def execute(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
@@ -183,6 +116,11 @@ class Engine:
             return self._select(stmt)
         if act == "create_index":
             return self._create_index_action(stmt)
+        
+        # --- NUEVO: Hook para CREATE_FTS_INDEX ---
+        if act == "create_fts_index":
+            return self._create_fts_index(stmt)
+            
         if act == "drop_index":
             return self._drop_index_action(stmt)
         raise ValueError(f"Acción no soportada: {act}")
@@ -419,10 +357,68 @@ class Engine:
         self.idx.rebuild_all(t)
         return {"ok": True, "deleted": deleted}
 
+    # --- NUEVA FUNCIÓN: Generador de documentos para FTS ---
+    def _make_doc_iterator(self, t: Table, text_columns: List[str]) -> Iterator[Tuple[int, str]]:
+        """
+        Crea un generador que escanea una tabla y concatena las columnas
+        de texto especificadas para el constructor FTS.
+        Produce (rid, full_text).
+        """
+        name_pos = _name_to_pos(t.schema)
+        pos_to_concat = []
+        for col_name in text_columns:
+            if col_name not in name_pos:
+                raise ValueError(f"La columna '{col_name}' no existe en la tabla '{t.name}'.")
+            pos_to_concat.append(name_pos[col_name])
+            
+        print(f"Iterador FTS: Concatenando columnas en posiciones: {pos_to_concat}")
+
+        for rid, row_tuple in t.scan() or []:
+            # Concatena todos los campos de texto en un solo bloque
+            full_text = " ".join(str(row_tuple[p]) for p in pos_to_concat)
+            yield (rid, full_text)
+
+    # --- NUEVA FUNCIÓN: Acción para crear FTS ---
+    def _create_fts_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
+        table_name = stmt["table"]
+        columns = stmt["columns"]
+        
+        print(f"Iniciando construcción de FTS INDEX para {table_name} en columnas: {columns}")
+        
+        t = self._get_table(table_name)
+        
+        # 1. Crear el iterador de documentos
+        doc_iterator = self._make_doc_iterator(t, columns)
+        
+        # 2. Instanciar y ejecutar el constructor
+        # Asumimos que el constructor FTS vive en el data_dir raíz
+        builder = InvertedIndexBuilder(data_dir=self.data_dir)
+        
+        start_time = time.time()
+        builder.build(doc_iterator)
+        end_time = time.time()
+        
+        total_docs = builder.total_docs
+        
+        # 3. Recargar el módulo de consulta para que esté disponible
+        self._load_fts_query_module()
+        
+        return {
+            "ok": True,
+            "message": "Índice FTS construido exitosamente.",
+            "total_docs_indexed": total_docs,
+            "time_taken_sec": (end_time - start_time)
+        }
+
+    # --- MODIFICADO: _select ---
     def _select(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
         t = self._get_table(stmt["table"])
         cols = stmt.get("columns", ["*"])
         cond = stmt.get("condition")
+        
+        # --- MODIFICADO: Obtener K (limit) ---
+        limit_k = stmt.get("limit", 100) # Default a 100 si no se especifica
+        
         name_pos = _name_to_pos(t.schema)
 
         # Proyección
@@ -437,6 +433,32 @@ class Engine:
         if cond:
             op = cond["op"]
 
+            # --- NUEVA LÓGICA FTS ---
+            if op == "FTS":
+                if not self.fts_query:
+                    return {"ok": False, "rows": [], "columns": [], "error": "FTS index not found. Use CREATE FTS INDEX ON table(cols) first."}
+                
+                query_text = cond["query_text"]
+                # Usamos el K del LIMIT
+                # fts_query.query() devuelve: [(score, docID), ...]
+                results = self.fts_query.query(query_text, k=limit_k)
+                
+                rows = []
+                # Añadimos 'score' a las columnas
+                final_columns = ["score"] + proj_names
+                
+                for score, rid in results:
+                    try:
+                        record_tuple = t.get_record(rid)
+                        projected_row = [record_tuple[p] for p in proj_pos]
+                        # Prepend el score formateado
+                        rows.append(["{:.6f}".format(score)] + projected_row)
+                    except (IOError, IndexError):
+                        # El registro podría no existir si el índice está desactualizado
+                        continue
+                        
+                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": "FTS", "column": cond["field"]}}
+            
             # ----- "=" y BETWEEN e IN 1D -----
             if op in ("=", "BETWEEN", "IN"):
                 field = cond["field"]
@@ -453,7 +475,7 @@ class Engine:
                     if rows is not None:
                         idx_inst = self.idx.list_for_table(t.name).get(field, None)
                         used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                        return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
 
                 elif op == "BETWEEN":
                     kind, payload = self.idx.probe_between(t.name, field, cond["low"], cond["high"])
@@ -467,7 +489,7 @@ class Engine:
                     if rows is not None:
                         idx_inst = self.idx.list_for_table(t.name).get(field, None)
                         used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                        return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
 
                 elif op == "IN":
                     kind, payload = self.idx.probe_rtree_radius(
@@ -477,7 +499,7 @@ class Engine:
                         rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
                         idx_inst = self.idx.list_for_table(t.name).get(field, None)
                         used = {"column": field, "type": idx_inst.__class__.__name__} if idx_inst else None
-                        return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+                        return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
 
             # ----- IN2: RTREE 2D sobre (lat,lon) -----
             if op == "IN2":
@@ -494,16 +516,20 @@ class Engine:
                     rows = [[list(t.get_record(rid))[p] for p in proj_pos] for rid in payload]
                     idx_inst = self.idx.list_for_table(t.name).get(synthetic, None)
                     used = {"column": synthetic, "type": idx_inst.__class__.__name__} if idx_inst else None
-                    return {"ok": True, "rows": rows, "columns": proj_names, "used_index": used}
+                    return {"ok": True, "rows": rows[:limit_k], "columns": proj_names, "used_index": used} # Aplicar limit
 
         # Fallback: scan con predicado (sin índice)
         pred = self._make_predicate(t.schema, cond)
         rows: List[List[Any]] = []
+        count = 0
         for _rid, row_tuple in t.scan() or []:
+            if count >= limit_k: # <-- MODIFICADO: Aplicar LIMIT también al scan
+                break
             row = list(row_tuple)
             if pred(row):
                 rows.append([row[p] for p in proj_pos])
-        # aquí no hubo índice, así que no mandamos used_index o lo mandamos None
+                count += 1
+                
         return {"ok": True, "rows": rows, "columns": proj_names}
 
     
@@ -557,7 +583,11 @@ class Engine:
                 self.catalog[name] = t
                 # reconstruir índices declarados en metadata
                 for col, typ in getattr(t, "index_specs", []):
-                    self.idx.create_index(t, col, typ)
+                    # Evitar reconstruir FTS aquí, se maneja globalmente
+                    if typ.upper() == "FTS":
+                        continue
+                    cols_list = col.split(',')
+                    self.idx.create_index(t, cols_list, typ)
             else:
                 raise ValueError(f"Tabla no existe: {name}")
         return self.catalog[name]
@@ -584,6 +614,11 @@ class Engine:
             return lambda row: True
         name_pos = _name_to_pos(schema)
         op = cond["op"]
+        
+        # FTS no se puede aplicar como predicado de scan, se maneja arriba
+        if op == "FTS":
+            return lambda row: True # (No debería llegar aquí)
+
         field = cond["field"]
         pos = name_pos[field]
 

@@ -62,8 +62,16 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
             "action": "create_index",
             "index_name": index_name,
             "table": table_name,
-            "column": columns,
+            "column": columns, # 'column' es ahora una lista
             "index_type": index_type
+        }
+    
+    # --- NUEVO: Adaptador para CREATE_FTS_INDEX ---
+    if cmd == "CREATE_FTS_INDEX":
+        return {
+            "action": "create_fts_index",
+            "table": plan.get("table_name"),
+            "columns": plan.get("columns", [])
         }
     
     if cmd == "INSERT":
@@ -89,7 +97,17 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
                 }
             elif op == "IN":
                 cond = {"op": "IN", "field": col, "coords": tuple(w.get("point", ())), "radius": float(w.get("radius", 0))}
-        return {"action": "select", "table": plan["table_name"], "columns": ["*"], "condition": cond}
+            # --- NUEVO: Adaptador para FTS (@@) ---
+            elif op == "FTS":
+                cond = {"op": "FTS", "field": col, "query_text": w.get("query_text")}
+                
+        return {
+            "action": "select", 
+            "table": plan["table_name"], 
+            "columns": ["*"], 
+            "condition": cond,
+            "limit": plan.get("limit", 100) # <-- MODIFICADO: Pasar el limit
+        }
 
     if cmd == "DELETE":
         w = plan.get("where")
@@ -137,9 +155,9 @@ async def run_sql(payload: SQLPayload):
         return response
 
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail=f"Error al procesar SQL aaaa: {ve}")
+        raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {ve}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error al procesar SQL bbbb: {e}")
+        raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {e}")
 
 @app.post("/api/upload")
 async def upload_csv(

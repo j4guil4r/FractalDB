@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 rtree
 python-multipart
+nltk

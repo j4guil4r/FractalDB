@@ -17,10 +17,14 @@ class SQLParser:
             r"INSERT INTO (\w+) VALUES\s*\((.*?)\)",
             re.IGNORECASE | re.DOTALL
         )
+        
+        # --- MODIFICADO: re_select ---
+        # Añadidos (.*?) para WHERE no-greedy y (?:\s+LIMIT\s+(\d+))? para LIMIT
         self.re_select = re.compile(
-            r"SELECT \* FROM (\w+)(?:\s+WHERE\s+(.*))?",
-            re.IGNORECASE
+            r"SELECT \* FROM (\w+)(?:\s+WHERE\s+(.*?))?(?:\s+LIMIT\s+(\d+))?",
+            re.IGNORECASE | re.DOTALL
         )
+        
         self.re_delete = re.compile(
             r"DELETE FROM (\w+) WHERE (.*)",
             re.IGNORECASE
@@ -35,6 +39,13 @@ class SQLParser:
                 \(\s*(\w+)\s*,\s*(\w+)\s*\)\s+
                 TYPE\s+RTREE\s*""",
             re.IGNORECASE | re.VERBOSE
+        )
+        
+        # --- NUEVO: re_create_fts_index ---
+        # Captura: CREATE FTS INDEX ON tabla(col1, col2, ...)
+        self.re_create_fts_index = re.compile(
+            r"CREATE\s+FTS\s+INDEX\s+ON\s+(\w+)\s*\((.*?)\)",
+            re.IGNORECASE | re.DOTALL
         )
 
     def parse(self, sql: str) -> Dict[str, Any]:
@@ -67,19 +78,25 @@ class SQLParser:
         if match:
             return self._parse_create_index(match.group(1), match.group(2), match.group(3), match.group(4))
 
+        # --- NUEVO: Parseo de FTS ---
+        match = self.re_create_fts_index.fullmatch(sql)
+        if match:
+            return self._parse_create_fts_index(match.group(1), match.group(2))
+
         match = self.re_insert.fullmatch(sql)
         if match:
             return self._parse_insert(match.group(1), match.group(2))
 
         match = self.re_select.fullmatch(sql)
         if match:
-            return self._parse_select(match.group(1), match.group(2))
+            # --- MODIFICADO: Pasa el grupo 3 (limit) ---
+            return self._parse_select(match.group(1), match.group(2), match.group(3))
 
         match = self.re_delete.fullmatch(sql)
         if match:
             return self._parse_delete(match.group(1), match.group(2))
 
-        raise ValueError(f"Consulta SQL no válida o no soportada WAWAAAAA: {sql}")
+        raise ValueError(f"Consulta SQL no válida o no soportada: {sql}")
 
     # ----------------- helpers internos -----------------
 
@@ -193,13 +210,28 @@ class SQLParser:
         plan['values'] = [self._cast_value(p) for p in parts]
         return plan
 
-    def _parse_select(self, table_name: str, where_str: str) -> Dict[str, Any]:
+    # --- MODIFICADO: _parse_select ---
+    # Añadido 'limit_str'
+    def _parse_select(self, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
         plan = {
             'command': 'SELECT',
             'table_name': table_name,
-            'where': None
+            'where': None,
+            'limit': int(limit_str) if limit_str else None # <-- NUEVO
         }
         if not where_str:
+            return plan
+
+        # --- NUEVA REGLA: Full-Text Search (@@) ---
+        # Debe ir ANTES de la regla genérica de '='
+        # Captura: col @@ 'texto de consulta'
+        match_fts = re.match(r"(\w+)\s*@@\s*'(.*?)'", where_str, re.IGNORECASE | re.DOTALL)
+        if match_fts:
+            plan['where'] = {
+                'column': match_fts.group(1),
+                'op': 'FTS', # Nuevo operador FTS (Full-Text Search)
+                'query_text': match_fts.group(2)
+            }
             return plan
 
         match = re.match(r"(\w+) BETWEEN (.*) AND (.*)", where_str, re.IGNORECASE)
@@ -223,7 +255,8 @@ class SQLParser:
                     'columns': [m.group(1), m.group(2)],
                     'point': point,
                     'radius': float(m.group(4))
-                }
+                },
+                'limit': int(limit_str) if limit_str else None # <-- NUEVO
             }
 
         match = re.match(r"(\w+) IN \(\((.*?)\),\s*(.*?)\)", where_str, re.IGNORECASE)
@@ -276,6 +309,19 @@ class SQLParser:
             'table_name': table_name,
             'column_name': column_name,
             'index_type': index_type
+        }
+    
+    # --- NUEVA FUNCIÓN: Parseo de CREATE FTS INDEX ---
+    def _parse_create_fts_index(self, table_name: str, cols_str: str) -> Dict[str, Any]:
+        """ Parsea CREATE FTS INDEX ON t(col1, col2) """
+        columns = [col.strip() for col in cols_str.split(',')]
+        if not columns:
+            raise ValueError("CREATE FTS INDEX debe especificar al menos una columna.")
+        
+        return {
+            'command': 'CREATE_FTS_INDEX',
+            'table_name': table_name,
+            'columns': columns
         }
 
     def _cast_value(self, value: str) -> Any:
