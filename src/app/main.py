@@ -144,6 +144,14 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# --- INICIO DE LA SOLUCIÓN ---
+# Dile a FastAPI que sirva archivos desde la carpeta /datos del contenedor
+# cuando el navegador pida una URL /datos/...
+# Esta es la carpeta que montaste en docker-compose.yaml
+app.mount("/datos", StaticFiles(directory="/datos"), name="datos")
+# --- FIN DE LA SOLUCIÓN ---
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))

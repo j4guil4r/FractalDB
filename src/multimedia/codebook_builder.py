@@ -23,20 +23,18 @@ class CodebookBuilder:
         self.codebook_path = os.path.join(data_dir, f"mm_codebook_k{k}.pkl")
         self.extractor = SIFTExtractor()
         
-        # Usamos MiniBatchKMeans para escalabilidad.
-        # No entrenamos aquí, solo lo inicializamos.
         self.kmeans = MiniBatchKMeans(
             n_clusters=self.k,
             verbose=True,
-            batch_size=256,
-            n_init=3, # Iniciar 3 veces con diferentes semillas
+            batch_size=256 * 4, # Batch size más grande para partial_fit
+            n_init=3, 
             max_iter=100,
             random_state=42
         )
         print(f"Constructor de Codebook (K={k}) inicializado.")
 
     def _get_descriptor_batches(self, image_paths: Iterable[str], 
-                                batch_size: int = 100) -> Iterable[np.ndarray]:
+                                batch_size: int = 1024) -> Iterable[np.ndarray]:
         """
         Un generador que produce lotes de descriptores SIFT desde las rutas
         de las imágenes, para no agotar la RAM.
@@ -60,57 +58,50 @@ class CodebookBuilder:
         if descriptors_batch:
             yield np.vstack(descriptors_batch)
 
+    # --- INICIO DE LA SOLUCIÓN 2 (Optimización RAM) ---
     def build_from_paths(self, image_paths: Iterable[str], sample_limit: int = 500_000):
         """
         Entrena el modelo K-Means usando descriptores de las imágenes
-        proporcionadas.
+        proporcionadas, usando partial_fit para no agotar la RAM.
         
         Args:
             image_paths: Un iterable (ej. lista) de rutas a las imágenes de entrenamiento.
             sample_limit: Nro. máximo de descriptores a usar para entrenar K-Means
-                          (para evitar entrenar con millones si el dataset es gigante).
         """
-        print(f"Iniciando construcción de Codebook (K={self.k})...")
-        print(f"Usando un límite de {sample_limit} descriptores para el entrenamiento.")
+        print(f"Iniciando construcción de Codebook (K={self.k}) con partial_fit...")
+        print(f"Usando un límite de ~{sample_limit} descriptores para el entrenamiento.")
 
-        # Recolectar un subconjunto de descriptores para entrenar
-        # Esto es más rápido que usar _get_descriptor_batches si cabe en RAM
-        
-        all_descriptors = []
         total_des_count = 0
         
-        for path in image_paths:
+        # Usamos el generador de lotes para entrenar K-Means en partes (partial_fit)
+        # Esto mantiene el uso de RAM bajo y constante.
+        batch_generator = self._get_descriptor_batches(image_paths, batch_size=1024 * 2)
+
+        for i, batch in enumerate(batch_generator):
             if total_des_count >= sample_limit:
-                print(f"Alcanzado el límite de {sample_limit} descriptores para muestreo.")
+                print(f"Alcanzado el límite de {sample_limit} descriptores. Deteniendo entrenamiento.")
                 break
                 
-            des = self.extractor.extract_from_path(path)
-            if des is not None:
-                all_descriptors.append(des)
-                total_des_count += des.shape[0]
+            if batch is not None and len(batch) > self.k:
+                # Muestrear el lote si es muy grande, para no sesgar el modelo
+                indices = np.random.permutation(len(batch))[:1024]
+                sample = batch[indices]
+                
+                # Entrenar en el lote
+                self.kmeans.partial_fit(sample)
+                total_des_count += len(sample)
+                print(f"  -> Lote {i+1} entrenado. Total descriptores: {total_des_count}")
 
-        if not all_descriptors:
+        if total_des_count == 0:
             print("Error: No se pudieron extraer descriptores de las imágenes proporcionadas.")
-            return
-
-        print(f"Recolectados {total_des_count} descriptores. Apilando en un solo array...")
-        training_data = np.vstack(all_descriptors)
-        
-        # Asegurarnos de no exceder el límite (por si el último lote fue grande)
-        if total_des_count > sample_limit:
-            indices = np.random.permutation(total_des_count)[:sample_limit]
-            training_data = training_data[indices]
+            # Intentar un 'fit' vacío para evitar errores, aunque el modelo no será útil
+            self.kmeans.fit(np.zeros((self.k, 128), dtype=np.float32))
             
-        print(f"Array de entrenamiento final: {training_data.shape}")
-
-        # Entrenar K-Means
-        print("Iniciando entrenamiento de MiniBatchKMeans...")
-        self.kmeans.fit(training_data)
+        print("Entrenamiento de K-Means (partial_fit) completado.")
         
-        print("Entrenamiento de K-Means completado.")
-        
-        # Guardar el modelo K-Means (que contiene los centroides)
+        # Guardar el modelo K-Means
         self.save_codebook()
+    # --- FIN DE LA SOLUCIÓN 2 ---
 
     def save_codebook(self):
         """
@@ -122,8 +113,6 @@ class CodebookBuilder:
             return
             
         print(f"Guardando codebook en {self.codebook_path}...")
-        # Guardamos el objeto K-Means completo, ya que lo necesitaremos
-        # para asignar nuevos descriptores a los clusters (palabras).
         with open(self.codebook_path, 'wb') as f:
             pickle.dump(self.kmeans, f)
         print("Codebook guardado.")

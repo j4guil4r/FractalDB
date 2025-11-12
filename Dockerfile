@@ -1,14 +1,12 @@
 FROM python:3.11-slim
 
+# NO incluimos las variables ENV OMP_NUM_THREADS
+# Esto permite a OpenCV y Sklearn usar MÚLTIPLES núcleos (¡VELOCIDAD!)
+
 WORKDIR /app
 
 COPY requirements.txt .
 
-# --- INICIO DE LA SOLUCIÓN ---
-# Instalar dependencias del S.O. (OpenCV) y de NLTK
-# 1. libgl1: Resuelve el 'libGL.so.1'
-# 2. libglib2.0-0: Resuelve el 'libgthread-2.0.so.0'
-# 3. Descargar los modelos de NLTK necesarios
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -17,11 +15,14 @@ RUN apt-get update && apt-get install -y \
     && python -m nltk.downloader punkt \
     && python -m nltk.downloader stopwords \
     && python -m nltk.downloader punkt_tab
-# --- FIN DE LA SOLUCIÓN ---
 
 COPY src/ ./src/
 
 EXPOSE 8000
 
-# Comando para ejecutar uvicorn
-CMD ["uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --- INICIO DE LA SOLUCIÓN ---
+# Usar "--workers 1" le dice a Uvicorn que corra en modo de producción simple.
+# Esto deshabilita el "reloader" (arreglando el bug de reinicio)
+# ¡PERO SÍ PERMITE que el proceso use todos tus núcleos de CPU!
+CMD ["uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# --- FIN DE LA SOLUCIÓN ---

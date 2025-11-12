@@ -504,30 +504,37 @@ class Engine:
             if path and (path.endswith('.jpg') or path.endswith('.png') or path.endswith('.jpeg')):
                 yield (rid, path)
 
+# ... (dentro de la clase Engine en engine.py) ...
+
     def _rebuild_mm_index_internal(self, t: Table, column_name: str, k: int):
         print(f"Paso 1/3 (Rebuild): Escaneando rutas de imágenes para K={k}...")
         image_paths_tuples = list(self._make_image_iterator(t, column_name))
         image_paths_only = [path for _rid, path in image_paths_tuples]
-        
         if not image_paths_only:
             print(f"Advertencia: No se encontraron rutas de imagen válidas para K={k}. El índice estará vacío.")
-
+        
         print(f"Paso 2/3 (Rebuild): Construyendo Codebook (K={k})...")
         cb = CodebookBuilder(k, self.data_dir)
-        cb.build_from_paths(image_paths_only) 
+        cb.build_from_paths(image_paths_only) # <- Usa Opt. 2
         
         print(f"Paso 3/3 (Rebuild): Construyendo Índice Invertido MM (K={k})...")
         hist_builder = BoVWHistogramBuilder(k, self.data_dir)
         mm_idx_builder = MMInvertedIndexBuilder(self.data_dir, k_clusters=k)
         
-        def hist_generator() -> Iterator[Tuple[int, np.ndarray]]:
+        # --- INICIO DE LA SOLUCIÓN 3 (Engine-side) ---
+        # Creamos una *función* que devuelve un nuevo generador cada vez.
+        # Esto permite al builder hacer múltiples pases sobre los datos.
+        def hist_generator_factory() -> Iterator[Tuple[int, np.ndarray]]:
             print("  -> Iniciando generador de histogramas...")
             for rid, path in image_paths_tuples:
                 hist_tf = hist_builder.create_histogram_from_path(path)
                 if hist_tf is not None:
                     yield (rid, hist_tf)
         
-        mm_idx_builder.build(hist_generator())
+        # Pasamos la *función* (fábrica), no el generador
+        mm_idx_builder.build(hist_generator_factory)
+        # --- FIN DE LA SOLUCIÓN 3 (Engine-side) ---
+        
         return mm_idx_builder.total_docs
 
     def _create_mm_index(self, stmt: Dict[str, Any]) -> Dict[str, Any]:
