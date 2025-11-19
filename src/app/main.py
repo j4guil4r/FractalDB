@@ -6,6 +6,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 import tempfile, os
 import re, time
+from typing import Dict, Any 
+
+from fastapi.concurrency import run_in_threadpool
 
 from src.parser.sqlparser import SQLParser
 from .engine import get_engine
@@ -62,8 +65,23 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
             "action": "create_index",
             "index_name": index_name,
             "table": table_name,
-            "column": columns,
+            "column": columns, 
             "index_type": index_type
+        }
+    
+    if cmd == "CREATE_FTS_INDEX":
+        return {
+            "action": "create_fts_index",
+            "table": plan.get("table_name"),
+            "columns": plan.get("columns", [])
+        }
+    
+    if cmd == "CREATE_MM_INDEX":
+        return {
+            "action": "create_mm_index",
+            "table": plan.get("table_name"),
+            "column": plan.get("column"),
+            "k": plan.get("k")
         }
     
     if cmd == "INSERT":
@@ -89,7 +107,23 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
                 }
             elif op == "IN":
                 cond = {"op": "IN", "field": col, "coords": tuple(w.get("point", ())), "radius": float(w.get("radius", 0))}
-        return {"action": "select", "table": plan["table_name"], "columns": ["*"], "condition": cond}
+            elif op == "FTS":
+                cond = {"op": "FTS", "field": col, "query_text": w.get("query_text")}
+            elif op == "MM_SIM":
+                cond = {
+                    "op": "MM_SIM", 
+                    "field": col, 
+                    "query_path": w.get("query_path"),
+                    "k": w.get("k") 
+                }
+                
+        return {
+            "action": "select", 
+            "table": plan["table_name"], 
+            "columns": ["*"], 
+            "condition": cond,
+            "limit": plan.get("limit") or 100 
+        }
 
     if cmd == "DELETE":
         w = plan.get("where")
@@ -102,7 +136,6 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
 
     raise ValueError(f"Comando no soportado: {cmd}")
 
-# --- Split por ';' ignorando lo que esté dentro de comillas ---
 _STMT_SPLIT = re.compile(r';\s*(?=(?:[^"\']|"[^"]*"|\'[^\']*\')*$)')
 
 
@@ -110,6 +143,9 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+app.mount("/datos", StaticFiles(directory="/datos"), name="datos")
+
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -123,9 +159,18 @@ async def run_sql(payload: SQLPayload):
         statements = [s.strip() for s in _STMT_SPLIT.split(q) if s.strip()]
         results = []
         for s in statements:
-            plan_parser = _parser.parse(s)
-            plan_engine = _adapt_plan_for_engine(plan_parser)
-            results.append({"sql": s, "result": get_engine().execute(plan_engine)})
+            
+            plan_parser = await run_in_threadpool(_parser.parse, s)
+
+            where_clause = plan_parser.get("where")
+            if where_clause and where_clause.get("op") == "MM_SIM":
+                raise ValueError("Las consultas de similitud (<->) deben hacerse "
+                                 "cargando una imagen de consulta en la sección "
+                                 "'Consulta Multimedia'.")
+            
+            plan_engine = await run_in_threadpool(_adapt_plan_for_engine, plan_parser)
+            result = await run_in_threadpool(get_engine().execute, plan_engine)
+            results.append({"sql": s, "result": result})
 
         end_time = time.time()
         execution_time = end_time - start_time
@@ -137,9 +182,52 @@ async def run_sql(payload: SQLPayload):
         return response
 
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail=f"Error al procesar SQL aaaa: {ve}")
+        raise HTTPException(status_code=400, detail=f"Error al procesar SQL: {ve}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error al procesar SQL bbbb: {e}")
+        raise HTTPException(status_code=500, detail=f"Error de servidor: {e}")
+
+@app.post("/api/sql_mm_query")
+async def run_sql_mm_query(
+    query: str = Form(...),
+    query_file: UploadFile = File(...)
+):
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            content = await query_file.read()
+            if not content:
+                raise HTTPException(400, "El archivo de consulta está vacío.")
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        start_time = time.time()
+
+        plan_parser = await run_in_threadpool(_parser.parse, query)
+        
+        if plan_parser.get("where", {}).get("op") != "MM_SIM":
+            raise ValueError("Este endpoint solo acepta consultas de similitud (<->).")
+            
+        plan_parser["where"]["query_path"] = tmp_path
+        
+        plan_engine = await run_in_threadpool(_adapt_plan_for_engine, plan_parser)
+        result = await run_in_threadpool(get_engine().execute, plan_engine)
+        
+        end_time = time.time()
+        execution_time = end_time - start_time
+
+        response = {
+            "results": result,
+            "execution_time": execution_time
+        }
+        return response
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Error al procesar consulta MM: {ve}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error de servidor en consulta MM: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 @app.post("/api/upload")
 async def upload_csv(
@@ -150,7 +238,7 @@ async def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Solo se aceptan CSV")
 
-    # 1) Guardar a un archivo temporal sin cargar todo a RAM
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
             while True:
@@ -158,23 +246,25 @@ async def upload_csv(
                 if not chunk:
                     break
                 tmp.write(chunk)
-        tmp_path = tmp.name
+            tmp_path = tmp.name
     except Exception as e:
         raise HTTPException(400, f"Error guardando archivo: {e}")
 
-    # 2) Cargar por ruta con inserción en streaming y reconstrucción de índices al final
     try:
-        inserted, columns = get_engine().load_csv_path(
+        inserted, columns = await run_in_threadpool(
+            get_engine().load_csv_path,
             table=table,
             csv_path=tmp_path,
             has_header=has_header,
         )
+        
         return {"ok": True, "table": table, "inserted": inserted, "columns": columns}
     except Exception as e:
         raise HTTPException(400, f"Error al cargar CSV: {e}")
     finally:
-        try: os.remove(tmp_path)
-        except: pass
+        if tmp_path and os.path.exists(tmp_path):
+            try: os.remove(tmp_path)
+            except: pass
 
 @app.get("/api/tables")
 async def list_tables():

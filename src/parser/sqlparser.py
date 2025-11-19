@@ -17,10 +17,13 @@ class SQLParser:
             r"INSERT INTO (\w+) VALUES\s*\((.*?)\)",
             re.IGNORECASE | re.DOTALL
         )
+        
+        # --- MODIFICADO (P2): Añadido LIMIT opcional ---
         self.re_select = re.compile(
-            r"SELECT \* FROM (\w+)(?:\s+WHERE\s+(.*))?",
-            re.IGNORECASE
+            r"SELECT \* FROM (\w+)(?:\s+WHERE\s+(.*?))?(?:\s+LIMIT\s+(\d+))?",
+            re.IGNORECASE | re.DOTALL
         )
+        
         self.re_delete = re.compile(
             r"DELETE FROM (\w+) WHERE (.*)",
             re.IGNORECASE
@@ -29,12 +32,21 @@ class SQLParser:
             r"CREATE INDEX (\w+) ON (\w+)\((\w+)\) TYPE (\w+)",
             re.IGNORECASE
         )
-        # RTREE con 2 columnas: CREATE INDEX idx ON tabla(col1, col2) TYPE RTREE
         self.re_create_index_rtree = re.compile(
             r"""CREATE\s+INDEX\s+(\w+)\s+ON\s+(\w+)\s*
                 \(\s*(\w+)\s*,\s*(\w+)\s*\)\s+
                 TYPE\s+RTREE\s*""",
             re.IGNORECASE | re.VERBOSE
+        )
+        
+        # --- NUEVO (P2): Regex para FTS y MM ---
+        self.re_create_fts_index = re.compile(
+            r"CREATE\s+FTS\s+INDEX\s+ON\s+(\w+)\s*\((.*?)\)",
+            re.IGNORECASE | re.DOTALL
+        )
+        self.re_create_mm_index = re.compile(
+            r"CREATE\s+MM\s+INDEX\s+ON\s+(\w+)\s*\((\w+)\)\s+TYPE\s+BOVW\s+K=(\d+)",
+            re.IGNORECASE
         )
 
     def parse(self, sql: str) -> Dict[str, Any]:
@@ -54,7 +66,6 @@ class SQLParser:
         
         match = self.re_create_index_rtree.fullmatch(sql)
         if match:
-            # index_name, table_name, col1, col2
             return {
                 'command': 'CREATE_INDEX',
                 'index_name': match.group(1),
@@ -67,36 +78,40 @@ class SQLParser:
         if match:
             return self._parse_create_index(match.group(1), match.group(2), match.group(3), match.group(4))
 
+        # --- NUEVO (P2): Parseo de FTS y MM ---
+        match = self.re_create_fts_index.fullmatch(sql)
+        if match:
+            return self._parse_create_fts_index(match.group(1), match.group(2))
+
+        match = self.re_create_mm_index.fullmatch(sql)
+        if match:
+            return self._parse_create_mm_index(match.group(1), match.group(2), match.group(3))
+
         match = self.re_insert.fullmatch(sql)
         if match:
             return self._parse_insert(match.group(1), match.group(2))
 
         match = self.re_select.fullmatch(sql)
         if match:
-            return self._parse_select(match.group(1), match.group(2))
+            # --- MODIFICADO (P2): Pasar limit_str (grupo 3) ---
+            return self._parse_select(match.group(1), match.group(2), match.group(3))
 
         match = self.re_delete.fullmatch(sql)
         if match:
             return self._parse_delete(match.group(1), match.group(2))
 
-        raise ValueError(f"Consulta SQL no válida o no soportada WAWAAAAA: {sql}")
+        raise ValueError(f"Consulta SQL no válida o no soportada: {sql}")
 
     # ----------------- helpers internos -----------------
 
     def _split_args(self, s: str) -> List[str]:
-        """
-        Divide 'a, "b, c", 'd', 12' por comas SOLO cuando están fuera de comillas.
-        Soporta comillas simples y dobles; preserva el contenido interno tal cual.
-        """
         out, buf = [], []
-        q = None  # comilla abierta: "'" o '"'
+        q = None  
         i, n = 0, len(s)
         while i < n:
             ch = s[i]
             if q is not None:
-                # estamos dentro de comillas
                 if ch == q:
-                    # soporta comillas duplicadas '' o ""
                     if i + 1 < n and s[i + 1] == q:
                         buf.append(q)
                         i += 2
@@ -108,7 +123,6 @@ class SQLParser:
                 i += 1
                 continue
 
-            # fuera de comillas
             if ch in ("'", '"'):
                 q = ch
                 i += 1
@@ -177,9 +191,6 @@ class SQLParser:
         return plan
 
     def _parse_insert(self, table_name: str, values_str: str) -> Dict[str, Any]:
-        """
-        Parsea INSERT INTO t VALUES (...), respetando comillas y comas.
-        """
         plan = {
             'command': 'INSERT',
             'table_name': table_name,
@@ -187,19 +198,45 @@ class SQLParser:
         }
 
         parts = self._split_args(values_str.strip())
-        # Limpieza por si llega "12," o " 'foo', "
         parts = [p[:-1] if p.endswith(",") else p for p in parts]
-
         plan['values'] = [self._cast_value(p) for p in parts]
         return plan
 
-    def _parse_select(self, table_name: str, where_str: str) -> Dict[str, Any]:
+    # (P2): Aceptar limit_str y parsear FTS/MM 
+    def _parse_select(self, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
         plan = {
             'command': 'SELECT',
             'table_name': table_name,
-            'where': None
+            'where': None,
+            'limit': int(limit_str) if limit_str else None 
         }
         if not where_str:
+            return plan
+
+        # --- NUEVO (P2): Parseo de MM Similitud (<->) ---
+        match_mm = re.match(
+            r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?", 
+            where_str, 
+            re.IGNORECASE
+        )
+        if match_mm:
+            k_value = match_mm.group(3)
+            plan['where'] = {
+                'column': match_mm.group(1),
+                'op': 'MM_SIM', 
+                'query_path': match_mm.group(2),
+                'k': int(k_value) if k_value else None 
+            }
+            return plan
+
+        # --- NUEVO (P2): Parseo de FTS (@@) ---
+        match_fts = re.match(r"(\w+)\s*@@\s*'(.*?)'", where_str, re.IGNORECASE | re.DOTALL)
+        if match_fts:
+            plan['where'] = {
+                'column': match_fts.group(1),
+                'op': 'FTS',
+                'query_text': match_fts.group(2)
+            }
             return plan
 
         match = re.match(r"(\w+) BETWEEN (.*) AND (.*)", where_str, re.IGNORECASE)
@@ -215,16 +252,13 @@ class SQLParser:
         m = re.match(r"(\w+)\s*,\s*(\w+)\s+IN\s*\(\((.*?)\)\s*,\s*(.*?)\)", where_str, re.IGNORECASE)
         if m:
             point = tuple(float(p) for p in m.group(3).split(','))
-            return {
-                'command': 'SELECT',
-                'table_name': table_name,
-                'where': {
-                    'op': 'IN2',
-                    'columns': [m.group(1), m.group(2)],
-                    'point': point,
-                    'radius': float(m.group(4))
-                }
+            plan['where'] = {
+                'op': 'IN2',
+                'columns': [m.group(1), m.group(2)],
+                'point': point,
+                'radius': float(m.group(4))
             }
+            return plan
 
         match = re.match(r"(\w+) IN \(\((.*?)\),\s*(.*?)\)", where_str, re.IGNORECASE)
         if match:
@@ -241,10 +275,8 @@ class SQLParser:
         if match:
             column = match.group(1)
             value = match.group(2).strip()
-
             if not (value.startswith("'") and value.endswith("'")):
                 value = f"'{value}'"
-
             plan['where'] = {
                 'column': column,
                 'op': '=',
@@ -277,33 +309,49 @@ class SQLParser:
             'column_name': column_name,
             'index_type': index_type
         }
+    
+    # --- NUEVO (P2): Parseo de FTS y MM ---
+    def _parse_create_fts_index(self, table_name: str, cols_str: str) -> Dict[str, Any]:
+        columns = [col.strip() for col in cols_str.split(',')]
+        if not columns:
+            raise ValueError("CREATE FTS INDEX debe especificar al menos una columna.")
+        
+        return {
+            'command': 'CREATE_FTS_INDEX',
+            'table_name': table_name,
+            'columns': columns
+        }
+
+    def _parse_create_mm_index(self, table_name: str, col_name: str, k_str: str) -> Dict[str, Any]:
+        return {
+            'command': 'CREATE_MM_INDEX',
+            'table_name': table_name,
+            'column': col_name.strip(),
+            'k': int(k_str)
+        }
+    # --- FIN NUEVO (P2) ---
 
     def _cast_value(self, value: str) -> Any:
         value = value.strip()
 
-        # String entre comillas
         if (value.startswith("'") and value.endswith("'")) or \
            (value.startswith('"') and value.endswith('"')):
             return value[1:-1]
 
-        # Tupla para RTree
         if value.startswith('(') and value.endswith(')'):
             try:
                 return tuple(float(p) for p in value.strip('()').split(','))
             except Exception:
                 pass
 
-        # Float
         try:
             return float(value)
         except ValueError:
             pass
 
-        # Int
         try:
             return int(value)
         except ValueError:
             pass
 
-        # Fallback string crudo
         return value
