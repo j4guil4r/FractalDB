@@ -233,6 +233,8 @@ class Engine:
     def load_csv_path(self, table: str, csv_path: str, has_header: bool = True):
         import csv as _csv
         import os
+        
+        _csv.field_size_limit(10_000_000)
 
         if not os.path.exists(csv_path):
             raise ValueError(f"Archivo no encontrado: {csv_path}")
