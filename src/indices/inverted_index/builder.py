@@ -9,6 +9,7 @@ import shutil
 from collections import defaultdict
 from typing import Iterator, Tuple, Dict, List, Any
 from src.text_processing import preprocess_text
+import psutil
 
 class InvertedIndexBuilder:
     
@@ -131,6 +132,28 @@ class InvertedIndexBuilder:
         if not self.block_file_paths:
             print("No se encontraron bloques para fusionar. Abortando.")
             return
+        
+        try:
+            # Obtiene la RAM disponible real del sistema
+            available_ram = psutil.virtual_memory().available
+            TOTAL_RAM_TO_USE = int(available_ram * 0.90)
+            print(f"Detectada RAM disponible: {available_ram/1024**3:.2f} GB. Usando 90%: {TOTAL_RAM_TO_USE/1024**3:.2f} GB")
+        except ImportError:
+            print("Librería 'psutil' no encontrada. Usando configuración manual de memoria.")
+            TOTAL_RAM_TO_USE = 2 * 1024 * 1024 * 1024
+
+        num_blocks = len(self.block_file_paths)
+        
+        # Calculamos el buffer por archivo
+        buffer_per_file = int(TOTAL_RAM_TO_USE / num_blocks)
+        
+        # Límite de seguridad inferior (para no romper open() con 0 bytes)
+        if buffer_per_file < 32768: buffer_per_file = 32768
+
+        MAX_C_INT = 2147483647
+        if buffer_per_file >= MAX_C_INT:
+            print(f"Advertencia: El buffer calculado excede el límite de Python. Ajustando a 2GB por archivo.")
+            buffer_per_file = MAX_C_INT - 1024
 
         lexicon = {} # El diccionario final: {'term': (offset, length)}
         heap = []
@@ -139,7 +162,7 @@ class InvertedIndexBuilder:
         try:
             # Abrir todos los archivos de bloque
             for i, block_path in enumerate(self.block_file_paths):
-                f = open(block_path, 'rb')
+                f = open(block_path, 'rb', buffering=buffer_per_file)
                 block_files.append(f)
                 
                 # "Priming the heap"
@@ -149,11 +172,21 @@ class InvertedIndexBuilder:
                 except EOFError:
                     f.close()
 
+            write_buffer = min(buffer_per_file, 50 * 1024 * 1024)
+
             # Abrir el archivo de índice final (donde irán los postings)
-            with open(self.final_index_path, 'wb') as f_out:
-                
+            with open(self.final_index_path, 'wb', buffering=write_buffer) as f_out:
+                counter = 0
+                process = psutil.Process()
                 # Iniciar el K-way merge
                 while heap:
+                    # --- MONITOREO DE RAM ---
+                    if counter % 1000 == 0:
+                        mem_info = process.memory_info()
+                        # RSS: Resident Set Size (Memoria física real usada)
+                        print(f"Procesando término {counter}... RAM usada por Python: {mem_info.rss / 1024 / 1024:.2f} MB")
+                    counter += 1
+                    # ------------------------
                     
                     # Tomar el término alfabéticamente menor
                     current_term, block_idx, first_postings = heapq.heappop(heap)

@@ -6,3 +6,4 @@ nltk
 opencv-contrib-python
 numpy
 scikit-learn
+psutil
