@@ -9,15 +9,71 @@ import re
 import time
 import glob 
 import numpy as np 
+import concurrent.futures
+import cv2
+from sklearn.neighbors import KDTree
 
 from src.indices.inverted_index.builder import InvertedIndexBuilder
 from src.indices.inverted_index.query import InvertedIndexQuery
 
 from src.multimedia.codebook_builder import CodebookBuilder
-from src.multimedia.histogram_builder import BoVWHistogramBuilder
 from src.multimedia.knn_search import KNNSearch 
 from src.multimedia.inverted_index_builder_mm import MMInvertedIndexBuilder
 from src.multimedia.inverted_index_query_mm import MMInvertedIndexQuery
+
+_worker_sift = None
+_worker_tree = None
+_worker_k = 0
+
+def _init_worker(centers, k):
+    """
+    Esta función se ejecuta UNA vez al iniciar cada proceso del Pool.
+    Aquí inicializamos SIFT y el KDTree localmente para evitar el error de Pickle.
+    """
+    global _worker_sift, _worker_tree, _worker_k
+    
+    # 1. Inicializar SIFT (Objeto C++ no serializable)
+    _worker_sift = cv2.SIFT_create()
+    
+    # 2. Inicializar KDTree con los centros recibidos (para búsqueda rápida)
+    _worker_tree = KDTree(centers)
+    
+    _worker_k = k
+
+def _process_image_task(path):
+    """
+    La tarea que ejecuta el worker para cada imagen.
+    """
+    global _worker_sift, _worker_tree, _worker_k
+    
+    try:
+        # --- LÓGICA DE EXTRACCIÓN ---
+        # Leemos y redimensionamos aquí para asegurar que el worker tenga todo
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None: return None
+        
+        # Redimensionamiento
+        MAX_DIM = 300
+        h, w = img.shape[:2]
+        if max(h, w) > MAX_DIM:
+            scale = MAX_DIM / max(h, w)
+            img = cv2.resize(img, (0,0), fx=scale, fy=scale)
+            
+        # Extraer SIFT
+        _, des = _worker_sift.detectAndCompute(img, None)
+        if des is None: return np.zeros(_worker_k, dtype=np.float32)
+
+        # --- LÓGICA DE HISTOGRAMA (KDTree) ---
+        # Buscar cluster más cercano
+        _, visual_words = _worker_tree.query(des, k=1)
+        visual_words = visual_words.flatten()
+        
+        # Construir histograma
+        hist = np.bincount(visual_words, minlength=_worker_k)
+        return hist.astype(np.float32)
+
+    except Exception as e:
+        return None
 
 def _parse_sql_type_to_core(sql_type: str) -> Tuple[str, int]:
     t = sql_type.upper()
@@ -508,24 +564,44 @@ class Engine:
     def _rebuild_mm_index_internal(self, t: Table, column_name: str, k: int):
         print(f"Paso 1/3 (Rebuild): Escaneando rutas de imágenes para K={k}...")
         image_paths_tuples = list(self._make_image_iterator(t, column_name))
-        image_paths_only = [path for _rid, path in image_paths_tuples]
+        image_paths_only = [path for _, path in image_paths_tuples]
         if not image_paths_only:
             print(f"Advertencia: No se encontraron rutas de imagen válidas para K={k}. El índice estará vacío.")
+            return 0
         
         print(f"Paso 2/3 (Rebuild): Construyendo Codebook (K={k})...")
         cb = CodebookBuilder(k, self.data_dir)
         cb.build_from_paths(image_paths_only) # <- Usa Opt. 2
         
         print(f"Paso 3/3 (Rebuild): Construyendo Índice Invertido MM (K={k})...")
-        hist_builder = BoVWHistogramBuilder(k, self.data_dir)
+        
+        # Obtenemos los centroides para pasárselos a los workers
+        if cb.kmeans is None:
+            # Intentar cargar si no está en memoria
+            cb.kmeans = CodebookBuilder.load_codebook(k, self.data_dir)
+             
+        centers = cb.kmeans.cluster_centers_
+        
         mm_idx_builder = MMInvertedIndexBuilder(self.data_dir, k_clusters=k)
+        rids = [rid for rid, _ in image_paths_tuples]
         
         def hist_generator_factory() -> Iterator[Tuple[int, np.ndarray]]:
-            print("  -> Iniciando generador de histogramas...")
-            for rid, path in image_paths_tuples:
-                hist_tf = hist_builder.create_histogram_from_path(path)
-                if hist_tf is not None:
-                    yield (rid, hist_tf)
+            cpu_count = os.cpu_count() or 4
+            print(f"  -> Iniciando generador paralelo con {cpu_count} núcleos...")
+            
+            # Esto crea el SIFT y el KDTree DENTRO de cada proceso al arrancar
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=cpu_count,
+                initializer=_init_worker,
+                initargs=(centers, k)
+            ) as executor:
+                
+                # Mapeamos solo la ruta (string), que SÍ es pickleable
+                results = executor.map(_process_image_task, image_paths_only, chunksize=20)
+                
+                for rid, hist in zip(rids, results):
+                    if hist is not None:
+                        yield (rid, hist)
         
         mm_idx_builder.build(hist_generator_factory)
         

@@ -22,7 +22,18 @@ class SIFTExtractor:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         
         if img is None:
+            print(f"Advertencia: Saltando imagen en ruta '{image_path}' (No encontrada o corrupta).")
             return None
+        
+        MAX_DIM = 300
+        height, width = img.shape[:2]
+        
+        if max(height, width) > MAX_DIM:
+            # Calcula el factor de escala basado en el lado más largo
+            scale = MAX_DIM / max(height, width)
+            
+            # Redimensiona la imagen, manteniendo el ratio
+            img = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             
         # Detectar keypoints y calcular descriptores
 
