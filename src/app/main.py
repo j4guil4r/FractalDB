@@ -114,7 +114,8 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
                     "op": "MM_SIM", 
                     "field": col, 
                     "query_path": w.get("query_path"),
-                    "k": w.get("k") 
+                    "k": w.get("k"),
+                    "mode": w.get("mode")
                 }
                 
         return {

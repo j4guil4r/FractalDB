@@ -213,23 +213,25 @@ class SQLParser:
         if not where_str:
             return plan
 
-        # --- NUEVO (P2): Parseo de MM Similitud (<->) ---
+        # --- NUEVO: Soporte para MODE='SEQ' ---
+        # Captura: ... <-> 'path' USING K=6 MODE='SEQ'
         match_mm = re.match(
-            r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?", 
-            where_str, 
+            r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?(?:\s+MODE='(\w+)')?",
+            where_str,
             re.IGNORECASE
         )
         if match_mm:
             k_value = match_mm.group(3)
+            mode_value = match_mm.group(4) # Captura 'SEQ' o 'INDEX'
             plan['where'] = {
                 'column': match_mm.group(1),
-                'op': 'MM_SIM', 
+                'op': 'MM_SIM',
                 'query_path': match_mm.group(2),
-                'k': int(k_value) if k_value else None 
+                'k': int(k_value) if k_value else None,
+                'mode': mode_value.upper() if mode_value else 'INDEX' # Default a Indexado
             }
             return plan
 
-        # --- NUEVO (P2): Parseo de FTS (@@) ---
         match_fts = re.match(r"(\w+)\s*@@\s*'(.*?)'", where_str, re.IGNORECASE | re.DOTALL)
         if match_fts:
             plan['where'] = {
