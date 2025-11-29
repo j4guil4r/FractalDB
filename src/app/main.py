@@ -121,7 +121,7 @@ def _adapt_plan_for_engine(plan: dict) -> dict:
         return {
             "action": "select", 
             "table": plan["table_name"], 
-            "columns": ["*"], 
+            "columns": plan.get("columns", ["*"]), 
             "condition": cond,
             "limit": plan.get("limit") or 100 
         }
