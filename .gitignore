@@ -4,3 +4,4 @@ __pycache__/
 src/data/
 .pytest_cache/
 data/
+images/

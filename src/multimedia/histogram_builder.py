@@ -5,6 +5,7 @@ import numpy as np
 import pickle
 from sklearn.cluster import MiniBatchKMeans
 from typing import Optional, Union
+from sklearn.neighbors import KDTree
 
 # Importamos nuestros otros módulos multimedia
 from src.multimedia.feature_extractor import SIFTExtractor
@@ -23,6 +24,10 @@ class BoVWHistogramBuilder:
                 f"No se pudo cargar el codebook para K={k}. "
                 "¿Ejecutaste 'codebook_builder.py' primero?"
             )
+        
+        if self.kmeans:
+            print("Construyendo KD-Tree para búsqueda rápida...")
+            self.tree = KDTree(self.kmeans.cluster_centers_, leaf_size=40)
             
         # Inicializar el extractor SIFT
         self.extractor = SIFTExtractor()
@@ -37,7 +42,8 @@ class BoVWHistogramBuilder:
             return np.zeros(self.k, dtype=np.float32)
             
         # Asignar cada descriptor al "visual word" (cluster) más cercano
-        visual_words = self.kmeans.predict(descriptors)
+        _dist, visual_words = self.tree.query(descriptors, k=1)
+        visual_words = visual_words.flatten()
         
         # Contar las ocurrencias de cada "visual word"
         hist = np.bincount(visual_words, minlength=self.k)

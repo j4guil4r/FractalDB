@@ -9,15 +9,71 @@ import re
 import time
 import glob 
 import numpy as np 
+import concurrent.futures
+import cv2
+from sklearn.neighbors import KDTree
 
 from src.indices.inverted_index.builder import InvertedIndexBuilder
 from src.indices.inverted_index.query import InvertedIndexQuery
 
 from src.multimedia.codebook_builder import CodebookBuilder
-from src.multimedia.histogram_builder import BoVWHistogramBuilder
 from src.multimedia.knn_search import KNNSearch 
 from src.multimedia.inverted_index_builder_mm import MMInvertedIndexBuilder
 from src.multimedia.inverted_index_query_mm import MMInvertedIndexQuery
+
+_worker_sift = None
+_worker_tree = None
+_worker_k = 0
+
+def _init_worker(centers, k):
+    """
+    Esta función se ejecuta UNA vez al iniciar cada proceso del Pool.
+    Aquí inicializamos SIFT y el KDTree localmente para evitar el error de Pickle.
+    """
+    global _worker_sift, _worker_tree, _worker_k
+    
+    # 1. Inicializar SIFT (Objeto C++ no serializable)
+    _worker_sift = cv2.SIFT_create()
+    
+    # 2. Inicializar KDTree con los centros recibidos (para búsqueda rápida)
+    _worker_tree = KDTree(centers)
+    
+    _worker_k = k
+
+def _process_image_task(path):
+    """
+    La tarea que ejecuta el worker para cada imagen.
+    """
+    global _worker_sift, _worker_tree, _worker_k
+    
+    try:
+        # --- LÓGICA DE EXTRACCIÓN ---
+        # Leemos y redimensionamos aquí para asegurar que el worker tenga todo
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None: return None
+        
+        # Redimensionamiento
+        MAX_DIM = 300
+        h, w = img.shape[:2]
+        if max(h, w) > MAX_DIM:
+            scale = MAX_DIM / max(h, w)
+            img = cv2.resize(img, (0,0), fx=scale, fy=scale)
+            
+        # Extraer SIFT
+        _, des = _worker_sift.detectAndCompute(img, None)
+        if des is None: return np.zeros(_worker_k, dtype=np.float32)
+
+        # --- LÓGICA DE HISTOGRAMA (KDTree) ---
+        # Buscar cluster más cercano
+        _, visual_words = _worker_tree.query(des, k=1)
+        visual_words = visual_words.flatten()
+        
+        # Construir histograma
+        hist = np.bincount(visual_words, minlength=_worker_k)
+        return hist.astype(np.float32)
+
+    except Exception as e:
+        return None
 
 def _parse_sql_type_to_core(sql_type: str) -> Tuple[str, int]:
     t = sql_type.upper()
@@ -75,7 +131,7 @@ class Engine:
         os.makedirs(self.data_dir, exist_ok=True)
         self.idx = IndexManager()
         
-        self.fts_query: Optional[InvertedIndexQuery] = None
+        self.fts_query: Dict[str, InvertedIndexQuery] = {}
         self.mm_query_modules: Dict[int, MMInvertedIndexQuery] = {}
         self.knn_seq_search: Dict[int, KNNSearch] = {}
         
@@ -84,16 +140,31 @@ class Engine:
     def _load_query_modules(self):
         """ Carga/Recarga todos los módulos de consulta FTS y MM disponibles. """
         
-        try:
-            if self.fts_query: self.fts_query.close()
-            self.fts_query = InvertedIndexQuery(data_dir=self.data_dir)
-            print("Motor: Módulo de consulta FTS cargado.")
-        except FileNotFoundError:
-            print("Motor: Índice FTS no encontrado. Las consultas @@ fallarán.")
-            self.fts_query = None
-        except Exception as e:
-            print(f"Motor: Error al cargar módulo FTS: {e}")
-            self.fts_query = None
+        # 1. Limpiar y recargar FTS (múltiples)
+        for q in self.fts_query.values(): q.close()
+        self.fts_query.clear()
+
+        meta_files = [f[:-5] for f in os.listdir(self.data_dir) if f.endswith(".meta") and "inverted_index" not in f]
+        
+        for table_name in meta_files:
+            try:
+                t = self._get_table(table_name)
+                for col_spec, idx_type in getattr(t, "index_specs", []):
+                    if idx_type == "FTS":
+                        # Reconstruimos el nombre único del archivo índice
+                        safe_cols = col_spec.replace(",", "_")
+                        idx_name = f"fts_{table_name}_{safe_cols}"
+                        
+                        try:
+                            # Cargar instancia específica
+                            key = f"{table_name}.{col_spec}"
+                            self.fts_query[key] = InvertedIndexQuery(self.data_dir, index_name=idx_name)
+                            print(f"Motor: Índice FTS cargado para '{key}' -> {idx_name}.dat")
+                        except Exception as e:
+                            print(f"Motor: Error cargando FTS '{idx_name}': {e}")
+            except Exception as e:
+                # Si una tabla falla, no detenemos el resto
+                pass
         
         for mod in self.mm_query_modules.values(): mod.close()
         self.mm_query_modules.clear()
@@ -466,8 +537,14 @@ class Engine:
         print(f"Iniciando construcción de FTS INDEX para {table_name} en columnas: {columns}")
         t = self._get_table(table_name)
         
+        spec_key = ",".join(columns)
+        safe_cols = spec_key.replace(",", "_")
+        unique_index_name = f"fts_{table_name}_{safe_cols}"
+
         doc_iterator = self._make_doc_iterator(t, columns)
-        builder = InvertedIndexBuilder(data_dir=self.data_dir)
+        
+        # Pasamos el index_name al builder
+        builder = InvertedIndexBuilder(data_dir=self.data_dir, index_name=unique_index_name)
         
         start_time = time.time()
         builder.build(doc_iterator)
@@ -475,9 +552,10 @@ class Engine:
         
         total_docs = builder.total_docs
         
-        spec_key = ",".join(columns)
         spec_type = "FTS"
         if not hasattr(t, "index_specs"): t.index_specs = []
+        
+        # Evitar duplicados en metadata
         if (spec_key, spec_type) not in t.index_specs:
             t.index_specs.append((spec_key, spec_type))
             t._save_metadata()
@@ -486,7 +564,7 @@ class Engine:
         
         return {
             "ok": True,
-            "message": "Índice FTS construido exitosamente.",
+            "message": f"Índice FTS '{unique_index_name}' construido exitosamente.",
             "total_docs_indexed": total_docs,
             "time_taken_sec": (end_time - start_time)
         }
@@ -508,26 +586,63 @@ class Engine:
     def _rebuild_mm_index_internal(self, t: Table, column_name: str, k: int):
         print(f"Paso 1/3 (Rebuild): Escaneando rutas de imágenes para K={k}...")
         image_paths_tuples = list(self._make_image_iterator(t, column_name))
-        image_paths_only = [path for _rid, path in image_paths_tuples]
+        image_paths_only = [path for _, path in image_paths_tuples]
+        
         if not image_paths_only:
             print(f"Advertencia: No se encontraron rutas de imagen válidas para K={k}. El índice estará vacío.")
+            return 0
         
         print(f"Paso 2/3 (Rebuild): Construyendo Codebook (K={k})...")
         cb = CodebookBuilder(k, self.data_dir)
         cb.build_from_paths(image_paths_only) # <- Usa Opt. 2
         
         print(f"Paso 3/3 (Rebuild): Construyendo Índice Invertido MM (K={k})...")
-        hist_builder = BoVWHistogramBuilder(k, self.data_dir)
+        
+        # Obtenemos los centroides para pasárselos a los workers
+        if cb.kmeans is None:
+            # Intentar cargar si no está en memoria
+            cb.kmeans = CodebookBuilder.load_codebook(k, self.data_dir)
+             
+        centers = cb.kmeans.cluster_centers_
+        
         mm_idx_builder = MMInvertedIndexBuilder(self.data_dir, k_clusters=k)
+        rids = [rid for rid, _ in image_paths_tuples]
         
+        # --- INICIO DEL GENERADOR PARALELO ---
         def hist_generator_factory() -> Iterator[Tuple[int, np.ndarray]]:
-            print("  -> Iniciando generador de histogramas...")
-            for rid, path in image_paths_tuples:
-                hist_tf = hist_builder.create_histogram_from_path(path)
-                if hist_tf is not None:
-                    yield (rid, hist_tf)
+            cpu_count = os.cpu_count() or 4
+            print(f"  -> Iniciando generador paralelo con {cpu_count} núcleos...")
+            
+            # Esto crea el SIFT y el KDTree DENTRO de cada proceso al arrancar
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=cpu_count,
+                initializer=_init_worker,
+                initargs=(centers, k)
+            ) as executor:
+                
+                # Mapeamos solo la ruta (string), que SÍ es pickleable
+                results = executor.map(_process_image_task, image_paths_only, chunksize=20)
+                
+                for rid, hist in zip(rids, results):
+                    if hist is not None:
+                        yield (rid, hist)
+        # --- FIN DEL GENERADOR PARALELO ---
         
+        # 1. Construir Índice Invertido (Rápido y Paralelo)
         mm_idx_builder.build(hist_generator_factory)
+        
+        # 2. Construir Base de Datos Secuencial (Para el Benchmark)
+        # IMPORTANTE: Esto es necesario para que funcione MODE='SEQ'
+        print(f"Generando base de datos para KNN Secuencial (Benchmark)...")
+        try:
+            # Importar aquí para evitar ciclos si no está arriba
+            from src.multimedia.knn_search import KNNSearch
+            seq_builder = KNNSearch(k, self.data_dir)
+            # Le pasamos la lista de tuplas [(rid, path)...]
+            # Nota: Esto correrá secuencial (un poco más lento), pero es necesario para la comparación.
+            seq_builder.build_database(image_paths_tuples) 
+        except Exception as e:
+            print(f"Advertencia: No se pudo construir la BD Secuencial: {e}")
         
         return mm_idx_builder.total_docs
 
@@ -578,29 +693,56 @@ class Engine:
             proj_names = cols
         if cond:
             op = cond["op"]
+            # --- BLOQUE MULTIMEDIA (MM_SIM) ACTUALIZADO ---
             if op == "MM_SIM":
-                if not self.mm_query_modules:
-                    return {"ok": False, "rows": [], "columns": [], "error": "Índice MM no encontrado. Use CREATE MM INDEX ON ..."}
-                k_from_query = cond.get("k") 
-                query_module = None
-                if k_from_query:
-                    query_module = self.mm_query_modules.get(k_from_query)
-                    if not query_module:
-                        return {"ok": False, "error": f"Índice MM con K={k_from_query} no encontrado o no cargado."}
-                else:
-                    if not self.mm_query_modules:
-                         return {"ok": False, "error": "No hay índices MM cargados."}
-                    query_module = list(self.mm_query_modules.values())[0]
-                k_used = query_module.k
                 query_path = cond["query_path"]
+                # Si el límite viene en la condición (k del parser) úsalo, si no el del SELECT
+                limit_k = cond.get("k") or stmt.get("limit") or 10 
+                
+                # Validar archivo
                 if not os.path.exists(query_path):
                      return {"ok": False, "error": f"Archivo de consulta no encontrado: {query_path}"}
+
+                # Detectar Modo (SEQ o INDEX)
+                mode = cond.get("mode", "INDEX")
                 
-                # --- INICIO DE LA SOLUCIÓN (TypeError) ---
-                # El argumento se llama 'top_k', no 'k'
-                results = query_module.query_by_path(query_path, top_k=limit_k)
-                # --- FIN DE LA SOLUCIÓN (TypeError) ---
-                
+                # Obtenemos el K de clusters deseado (ej. 20)
+                # Si no se especifica, intentamos inferirlo de los índices cargados
+                k_clusters_needed = cond.get("k") 
+                if not k_clusters_needed and self.mm_query_modules:
+                    k_clusters_needed = list(self.mm_query_modules.keys())[0]
+                if not k_clusters_needed: k_clusters_needed = 20 # Default fallback
+
+                results = []
+                used_method = ""
+
+                # OPCIÓN A: Búsqueda Secuencial (Escaneo)
+                if mode == 'SEQ':
+                    # Inicializar buscador secuencial si no existe
+                    if k_clusters_needed not in self.knn_seq_search:
+                        try:
+                            print(f"Cargando motor KNN Secuencial para K={k_clusters_needed}...")
+                            self.knn_seq_search[k_clusters_needed] = KNNSearch(k_clusters=k_clusters_needed, data_dir=self.data_dir)
+                            self.knn_seq_search[k_clusters_needed].load_database()
+                        except Exception as e:
+                             return {"ok": False, "error": f"No se pudo cargar BD Secuencial (K={k_clusters_needed}). ¿Ejecutaste el benchmark primero? Error: {e}"}
+                    
+                    used_method = f"SEQUENTIAL_SCAN (TF-IDF Matrix K={k_clusters_needed})"
+                    # Ejecutar búsqueda
+                    results = self.knn_seq_search[k_clusters_needed].search_by_path(query_path, top_k=limit_k)
+
+                # OPCIÓN B: Búsqueda Indexada (Inverted Index) - DEFAULT
+                else:
+                    query_module = self.mm_query_modules.get(k_clusters_needed)
+                    
+                    if not query_module:
+                        return {"ok": False, "error": f"Índice MM Invertido no encontrado para K={k_clusters_needed}. Use CREATE MM INDEX..."}
+
+                    used_method = f"MM_INVERTED_INDEX (BoVW K={query_module.k})"
+                    # Ejecutar búsqueda
+                    results = query_module.query_by_path(query_path, top_k=limit_k)
+
+                # Procesar Resultados (Común para ambos)
                 rows = []
                 final_columns = ["score"] + proj_names
                 for score, rid in results:
@@ -610,13 +752,35 @@ class Engine:
                         rows.append(["{:.6f}".format(score)] + projected_row)
                     except (IOError, IndexError):
                         continue
-                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": f"MM_BOVW_INV (K={k_used})", "column": cond["field"]}}
+                
+                return {
+                    "ok": True, 
+                    "rows": rows, 
+                    "columns": final_columns, 
+                    "used_index": {"type": used_method, "column": cond["field"]}
+                }
+            # ----------------------------------------------
 
             if op == "FTS":
-                if not self.fts_query:
-                    return {"ok": False, "rows": [], "columns": [], "error": "FTS index not found."}
+                target_col = cond["field"]
+                fts_module = None
+                found_key = None
+
+                # Búsqueda flexible: ¿Hay algún índice FTS en esta tabla que incluya esta columna?
+                for key, module in self.fts_query.items():
+                    if key.startswith(f"{t.name}."):
+                        cols_in_index = key.split(".")[1].split(",")
+                        if target_col in cols_in_index:
+                            fts_module = module
+                            found_key = key
+                            break
+                
+                if not fts_module:
+                    return {"ok": False, "rows": [], "columns": [], "error": f"No se encontró un índice FTS que cubra la columna '{target_col}' en la tabla '{t.name}'."}
+                
                 query_text = cond["query_text"]
-                results = self.fts_query.query(query_text, k=limit_k)
+                results = fts_module.query(query_text, k=limit_k)
+                
                 rows = []
                 final_columns = ["score"] + proj_names
                 for score, rid in results:
@@ -626,7 +790,7 @@ class Engine:
                         rows.append(["{:.6f}".format(score)] + projected_row)
                     except (IOError, IndexError):
                         continue
-                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": "FTS", "column": cond["field"]}}
+                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": "FTS", "column": found_key}}
             
             if op in ("=", "BETWEEN", "IN"):
                 field = cond["field"]

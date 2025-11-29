@@ -13,7 +13,7 @@ import psutil
 
 class InvertedIndexBuilder:
     
-    def __init__(self, data_dir: str, block_size_limit_mb: int = 128):
+    def __init__(self, data_dir: str, index_name: str = "inverted_index", block_size_limit_mb: int = 128):
         self.data_dir = data_dir
         
         # Directorio temporal para SPIMI
@@ -24,8 +24,8 @@ class InvertedIndexBuilder:
         self.temp_meta_path = os.path.join(self.temp_block_dir, "spimi_build.meta")
         
         # Archivos del índice final
-        self.final_index_path = os.path.join(data_dir, "inverted_index.dat")
-        self.final_meta_path = os.path.join(data_dir, "inverted_index.meta")
+        self.final_index_path = os.path.join(data_dir, f"{index_name}.dat")
+        self.final_meta_path = os.path.join(data_dir, f"{index_name}.meta")
 
         self.block_size_limit = block_size_limit_mb * 1024 * 1024
         

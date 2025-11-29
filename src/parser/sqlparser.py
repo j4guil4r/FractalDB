@@ -20,7 +20,7 @@ class SQLParser:
         
         # --- MODIFICADO (P2): Añadido LIMIT opcional ---
         self.re_select = re.compile(
-            r"SELECT \* FROM (\w+)(?:\s+WHERE\s+(.*?))?(?:\s+LIMIT\s+(\d+))?",
+            r"SELECT\s+(.*?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.*?))?(?:\s+LIMIT\s+(\d+))?",
             re.IGNORECASE | re.DOTALL
         )
         
@@ -93,8 +93,7 @@ class SQLParser:
 
         match = self.re_select.fullmatch(sql)
         if match:
-            # --- MODIFICADO (P2): Pasar limit_str (grupo 3) ---
-            return self._parse_select(match.group(1), match.group(2), match.group(3))
+            return self._parse_select(match.group(1), match.group(2), match.group(3), match.group(4))
 
         match = self.re_delete.fullmatch(sql)
         if match:
@@ -203,33 +202,38 @@ class SQLParser:
         return plan
 
     # (P2): Aceptar limit_str y parsear FTS/MM 
-    def _parse_select(self, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
+    def _parse_select(self, cols_str: str, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
+        columns = [c.strip() for c in cols_str.split(',')]
+        if "*" in columns: columns = ["*"]
         plan = {
             'command': 'SELECT',
             'table_name': table_name,
+            'columns': columns,
             'where': None,
             'limit': int(limit_str) if limit_str else None 
         }
         if not where_str:
             return plan
 
-        # --- NUEVO (P2): Parseo de MM Similitud (<->) ---
+        # --- NUEVO: Soporte para MODE='SEQ' ---
+        # Captura: ... <-> 'path' USING K=6 MODE='SEQ'
         match_mm = re.match(
-            r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?", 
-            where_str, 
+            r"(\w+)\s*<->\s*'(.*?)'(?:\s+USING\s+K=(\d+))?(?:\s+MODE='(\w+)')?",
+            where_str,
             re.IGNORECASE
         )
         if match_mm:
             k_value = match_mm.group(3)
+            mode_value = match_mm.group(4) # Captura 'SEQ' o 'INDEX'
             plan['where'] = {
                 'column': match_mm.group(1),
-                'op': 'MM_SIM', 
+                'op': 'MM_SIM',
                 'query_path': match_mm.group(2),
-                'k': int(k_value) if k_value else None 
+                'k': int(k_value) if k_value else None,
+                'mode': mode_value.upper() if mode_value else 'INDEX' # Default a Indexado
             }
             return plan
 
-        # --- NUEVO (P2): Parseo de FTS (@@) ---
         match_fts = re.match(r"(\w+)\s*@@\s*'(.*?)'", where_str, re.IGNORECASE | re.DOTALL)
         if match_fts:
             plan['where'] = {

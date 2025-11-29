@@ -10,11 +10,11 @@ from src.text_processing import preprocess_text
 
 class InvertedIndexQuery:
     
-    def __init__(self, data_dir: str = 'data'):
+    def __init__(self, data_dir: str = 'data', index_name: str = "inverted_index"):
         self.index_file = None
         
-        self.final_index_path = os.path.join(data_dir, "inverted_index.dat")
-        self.final_meta_path = os.path.join(data_dir, "inverted_index.meta")
+        self.final_index_path = os.path.join(data_dir, f"{index_name}.dat")
+        self.final_meta_path = os.path.join(data_dir, f"{index_name}.meta")
         
         if not os.path.exists(self.final_index_path) or not os.path.exists(self.final_meta_path):
             raise FileNotFoundError("No se encontró el índice. Asegúrese de construirlo primero.")
