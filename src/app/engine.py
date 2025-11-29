@@ -131,7 +131,7 @@ class Engine:
         os.makedirs(self.data_dir, exist_ok=True)
         self.idx = IndexManager()
         
-        self.fts_query: Optional[InvertedIndexQuery] = None
+        self.fts_query: Dict[str, InvertedIndexQuery] = {}
         self.mm_query_modules: Dict[int, MMInvertedIndexQuery] = {}
         self.knn_seq_search: Dict[int, KNNSearch] = {}
         
@@ -140,16 +140,31 @@ class Engine:
     def _load_query_modules(self):
         """ Carga/Recarga todos los módulos de consulta FTS y MM disponibles. """
         
-        try:
-            if self.fts_query: self.fts_query.close()
-            self.fts_query = InvertedIndexQuery(data_dir=self.data_dir)
-            print("Motor: Módulo de consulta FTS cargado.")
-        except FileNotFoundError:
-            print("Motor: Índice FTS no encontrado. Las consultas @@ fallarán.")
-            self.fts_query = None
-        except Exception as e:
-            print(f"Motor: Error al cargar módulo FTS: {e}")
-            self.fts_query = None
+        # 1. Limpiar y recargar FTS (múltiples)
+        for q in self.fts_query.values(): q.close()
+        self.fts_query.clear()
+
+        meta_files = [f[:-5] for f in os.listdir(self.data_dir) if f.endswith(".meta") and "inverted_index" not in f]
+        
+        for table_name in meta_files:
+            try:
+                t = self._get_table(table_name)
+                for col_spec, idx_type in getattr(t, "index_specs", []):
+                    if idx_type == "FTS":
+                        # Reconstruimos el nombre único del archivo índice
+                        safe_cols = col_spec.replace(",", "_")
+                        idx_name = f"fts_{table_name}_{safe_cols}"
+                        
+                        try:
+                            # Cargar instancia específica
+                            key = f"{table_name}.{col_spec}"
+                            self.fts_query[key] = InvertedIndexQuery(self.data_dir, index_name=idx_name)
+                            print(f"Motor: Índice FTS cargado para '{key}' -> {idx_name}.dat")
+                        except Exception as e:
+                            print(f"Motor: Error cargando FTS '{idx_name}': {e}")
+            except Exception as e:
+                # Si una tabla falla, no detenemos el resto
+                pass
         
         for mod in self.mm_query_modules.values(): mod.close()
         self.mm_query_modules.clear()
@@ -522,8 +537,14 @@ class Engine:
         print(f"Iniciando construcción de FTS INDEX para {table_name} en columnas: {columns}")
         t = self._get_table(table_name)
         
+        spec_key = ",".join(columns)
+        safe_cols = spec_key.replace(",", "_")
+        unique_index_name = f"fts_{table_name}_{safe_cols}"
+
         doc_iterator = self._make_doc_iterator(t, columns)
-        builder = InvertedIndexBuilder(data_dir=self.data_dir)
+        
+        # Pasamos el index_name al builder
+        builder = InvertedIndexBuilder(data_dir=self.data_dir, index_name=unique_index_name)
         
         start_time = time.time()
         builder.build(doc_iterator)
@@ -531,9 +552,10 @@ class Engine:
         
         total_docs = builder.total_docs
         
-        spec_key = ",".join(columns)
         spec_type = "FTS"
         if not hasattr(t, "index_specs"): t.index_specs = []
+        
+        # Evitar duplicados en metadata
         if (spec_key, spec_type) not in t.index_specs:
             t.index_specs.append((spec_key, spec_type))
             t._save_metadata()
@@ -542,7 +564,7 @@ class Engine:
         
         return {
             "ok": True,
-            "message": "Índice FTS construido exitosamente.",
+            "message": f"Índice FTS '{unique_index_name}' construido exitosamente.",
             "total_docs_indexed": total_docs,
             "time_taken_sec": (end_time - start_time)
         }
@@ -740,10 +762,25 @@ class Engine:
             # ----------------------------------------------
 
             if op == "FTS":
-                if not self.fts_query:
-                    return {"ok": False, "rows": [], "columns": [], "error": "FTS index not found."}
+                target_col = cond["field"]
+                fts_module = None
+                found_key = None
+
+                # Búsqueda flexible: ¿Hay algún índice FTS en esta tabla que incluya esta columna?
+                for key, module in self.fts_query.items():
+                    if key.startswith(f"{t.name}."):
+                        cols_in_index = key.split(".")[1].split(",")
+                        if target_col in cols_in_index:
+                            fts_module = module
+                            found_key = key
+                            break
+                
+                if not fts_module:
+                    return {"ok": False, "rows": [], "columns": [], "error": f"No se encontró un índice FTS que cubra la columna '{target_col}' en la tabla '{t.name}'."}
+                
                 query_text = cond["query_text"]
-                results = self.fts_query.query(query_text, k=limit_k)
+                results = fts_module.query(query_text, k=limit_k)
+                
                 rows = []
                 final_columns = ["score"] + proj_names
                 for score, rid in results:
@@ -753,7 +790,7 @@ class Engine:
                         rows.append(["{:.6f}".format(score)] + projected_row)
                     except (IOError, IndexError):
                         continue
-                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": "FTS", "column": cond["field"]}}
+                return {"ok": True, "rows": rows, "columns": final_columns, "used_index": {"type": "FTS", "column": found_key}}
             
             if op in ("=", "BETWEEN", "IN"):
                 field = cond["field"]
