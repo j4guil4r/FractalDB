@@ -336,15 +336,24 @@
         
         const results = data.results; 
         if (results && results.rows && results.columns) {
-          const idx = results.used_index ? `<p><small>Usó índice: ${results.used_index.type} en ${results.used_index.column}</small></p>` : '';
+          let metaHtml = '';
+
+          if (results.used_index) {
+            metaHtml += `<p><small>Usó índice: ${results.used_index.type} en ${results.used_index.column}</small></p>`;
+          } else if (results.used_method) {
+            metaHtml += `<p><small>Método de ejecución: ${results.used_method}</small></p>`;
+          }
+
           const totalRows = results.rows.length;
           const limit = 150;
           const rowsToDisplay = totalRows > limit ? results.rows.slice(0, limit) : results.rows;
           const totalRowsText = totalRows > limit ? `<p>Total de registros retornados: ${totalRows}</p>` : '';
-          out.innerHTML = idx + totalRowsText + renderTable(results.columns, rowsToDisplay);
+
+          out.innerHTML = metaHtml + totalRowsText + renderTable(results.columns, rowsToDisplay);
         } else {
           out.innerHTML = show(results);
         }
+
 
       } catch (e) {
         showError('Network/JS error: ' + e);

@@ -759,6 +759,7 @@ class Engine:
             proj_names = cols
         if cond:
             op = cond["op"]
+
             if op == "MM_SIM":
                 query_path = cond["query_path"]
                 limit_k = cond.get("k") or stmt.get("limit") or 10
@@ -768,7 +769,8 @@ class Engine:
 
                 modality = _detect_modality_from_query_path(query_path)
 
-                mode = cond.get("mode", "INDEX")
+                # Normalizamos modo a MAYÚSCULAS por si acaso
+                mode = (cond.get("mode") or "INDEX").upper()
 
                 k_clusters_needed = cond.get("k")
                 if not k_clusters_needed:
@@ -783,6 +785,7 @@ class Engine:
                 used_method = ""
 
                 if mode == 'SEQ':
+                    # -------- KNN SECUENCIAL --------
                     if modality == "audio":
                         if k_clusters_needed not in self.audio_knn_seq_search:
                             try:
@@ -793,12 +796,17 @@ class Engine:
                                 )
                                 self.audio_knn_seq_search[k_clusters_needed].load_database()
                             except Exception as e:
-                                return {"ok": False,
-                                        "error": f"No se pudo cargar BD Secuencial de audio (K={k_clusters_needed}). "
-                                                 f"¿Ejecutaste el benchmark primero? Error: {e}"}
+                                return {
+                                    "ok": False,
+                                    "error": (
+                                        f"No se pudo cargar BD Secuencial de audio (K={k_clusters_needed}). "
+                                        f"¿Ejecutaste el benchmark primero? Error: {e}"
+                                    )
+                                }
                         used_method = f"SEQUENTIAL_SCAN_AUDIO (TF-IDF Matrix K={k_clusters_needed})"
                         results = self.audio_knn_seq_search[k_clusters_needed].search_by_path(
-                            query_path, top_k=limit_k)
+                            query_path, top_k=limit_k
+                        )
                     else:
                         if k_clusters_needed not in self.knn_seq_search:
                             try:
@@ -809,30 +817,45 @@ class Engine:
                                 )
                                 self.knn_seq_search[k_clusters_needed].load_database()
                             except Exception as e:
-                                return {"ok": False,
-                                        "error": f"No se pudo cargar BD Secuencial (K={k_clusters_needed}). "
-                                                 f"¿Ejecutaste el benchmark primero? Error: {e}"}
+                                return {
+                                    "ok": False,
+                                    "error": (
+                                        f"No se pudo cargar BD Secuencial (K={k_clusters_needed}). "
+                                        f"¿Ejecutaste el benchmark primero? Error: {e}"
+                                    )
+                                }
                         used_method = f"SEQUENTIAL_SCAN (TF-IDF Matrix K={k_clusters_needed})"
                         results = self.knn_seq_search[k_clusters_needed].search_by_path(
-                            query_path, top_k=limit_k)
+                            query_path, top_k=limit_k
+                        )
                 else:
+                    # -------- ÍNDICE INVERTIDO MM --------
                     if modality == "audio":
                         query_module = self.mm_audio_query_modules.get(k_clusters_needed)
                         if not query_module:
-                            return {"ok": False,
-                                    "error": f"Índice MM Audio no encontrado para K={k_clusters_needed}. "
-                                             f"Use CREATE MM INDEX..."}
+                            return {
+                                "ok": False,
+                                "error": (
+                                    f"Índice MM Audio no encontrado para K={k_clusters_needed}. "
+                                    f"Use CREATE MM INDEX..."
+                                )
+                            }
                         used_method = f"MM_AUDIO_INVERTED_INDEX (BoAW K={query_module.k})"
                         results = query_module.query_by_path(query_path, top_k=limit_k)
                     else:
                         query_module = self.mm_query_modules.get(k_clusters_needed)
                         if not query_module:
-                            return {"ok": False,
-                                    "error": f"Índice MM Invertido no encontrado para K={k_clusters_needed}. "
-                                             f"Use CREATE MM INDEX..."}
+                            return {
+                                "ok": False,
+                                "error": (
+                                    f"Índice MM Invertido no encontrado para K={k_clusters_needed}. "
+                                    f"Use CREATE MM INDEX..."
+                                )
+                            }
                         used_method = f"MM_INVERTED_INDEX (BoVW K={query_module.k})"
                         results = query_module.query_by_path(query_path, top_k=limit_k)
 
+                # Construimos filas resultado
                 rows = []
                 final_columns = ["score"] + proj_names
                 for score, rid in results:
@@ -843,11 +866,20 @@ class Engine:
                     except (IOError, IndexError):
                         continue
 
+                # Solo marcamos used_index si de verdad se usó índice invertido
+                used_index_info = None
+                if mode != "SEQ":
+                    used_index_info = {
+                        "type": used_method,
+                        "column": cond.get("column", cond.get("field", "?"))
+                    }
+
                 return {
                     "ok": True,
                     "rows": rows,
                     "columns": final_columns,
-                    "used_index": {"type": used_method, "column": cond["field"]}
+                    "used_index": used_index_info,
+                    "used_method": used_method  # para que el front pueda mostrar el método aunque no sea índice
                 }
 
             if op == "FTS":
