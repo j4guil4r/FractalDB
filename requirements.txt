@@ -7,3 +7,6 @@ opencv-contrib-python
 numpy
 scikit-learn
 psutil
+librosa
+soundfile
+audioread

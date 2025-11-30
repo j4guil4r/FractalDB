@@ -6,7 +6,6 @@
   <title>FractalDB</title>
   <link rel="stylesheet" href="/static/main.css">
   <style>
-    /* Mini CSS para dropzone, chips y modal. Respeta tu theme. */
     .grid { display:grid; gap:12px; }
     .cols { display:grid; grid-template-columns: 1fr auto auto; gap:12px; align-items:center; }
     .dropzone{
@@ -26,7 +25,6 @@
     }
     .chip-btn:hover{ filter:saturate(1.1); box-shadow:0 6px 14px rgba(0,229,255,.25) }
 
-    /* Modal */
     .modal{ position:fixed; inset:0; display:none; place-items:center; z-index:50; }
     .modal.show{ display:grid; }
     .backdrop{ position:absolute; inset:0; background: rgba(5,10,16,.65); backdrop-filter: blur(2px); }
@@ -42,7 +40,6 @@
     .close{ border-radius:10px; padding:6px 10px; cursor:pointer; border:1px solid rgba(0,229,255,.35); background: rgba(0,229,255,.09); color:#9feaff }
     .note{ color:#8aa0b3; font-size:12px; margin:6px 0 0 }
     
-    /* --- NUEVO: CSS para render de imagen --- */
     td img.thumbnail {
         max-width: 150px;
         max-height: 150px;
@@ -84,7 +81,6 @@
           </div>
         </div>
 
-
         <div class="row" style="justify-content:flex-end;">
           <button id="uploadBtn">Subir CSV</button>
         </div>
@@ -97,19 +93,31 @@
     </section>
 
     <section style="margin-top:22px;">
-      <h2 style="margin:0 0 8px; font-size:16px;">Consulta Multimedia (BoVW)</h2>
+      <h2 style="margin:0 0 8px; font-size:16px;">Consulta Multimedia (BoVW imagen / BoAW audio)</h2>
       <div class="grid">
-        <input id="queryFileInput" type="file" accept="image/jpeg,image/png" hidden />
+        <!-- selector de modo -->
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap;">
+          <strong style="font-size:13px;">Tipo de consulta:</strong>
+          <label class="muted">
+            <input type="radio" name="mmMode" value="image" checked> Imagen
+          </label>
+          <label class="muted">
+            <input type="radio" name="mmMode" value="audio"> Audio
+          </label>
+        </div>
+
+        <input id="queryFileInput" type="file" accept="image/*,audio/*" hidden />
         <div id="queryDropZone" class="dropzone">
-          <span id="queryDzLabel">Arrastra tu **imagen de consulta** aquí o haz clic</span>
+          <span id="queryDzLabel">Arrastra tu imagen de consulta aquí o haz clic</span>
         </div>
       </div>
       <p class="muted" style="margin-top: 4px;">
-        Luego, ejecuta una consulta SQL como: 
-        <code style="color: var(--accent-2);">SELECT * FROM ... WHERE img_col &lt;-&gt; 'query_file' LIMIT 10;</code>
+        Luego, ejecuta una consulta SQL como:
+        <code style="color: var(--accent-2);">SELECT * FROM Fotos WHERE img_col &lt;-&gt; 'query_file' LIMIT 10; </code>
+        o
+        <code style="color: var(--accent-2);"> SELECT * FROM Audios WHERE audio_col &lt;-&gt; 'query_file' LIMIT 10;</code>
       </p>
     </section>
-
 
     <section style="margin-top:22px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
@@ -133,7 +141,7 @@
     </section>
 
     <footer style="margin:28px 0 6px; color:#8aa0b3; font-size:12px;">
-      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE, FTS, MM_BOVW</span>
+      <span>▦ FractalDB</span> · <span>índices: BTREE, HASH, ISAM, SEQ, RTREE, FTS, MM_BOVW (imagen/audio)</span>
     </footer>
   </div>
 
@@ -150,42 +158,59 @@
   </div>
 
   <script>
-    // ---------- helpers ----------
     const $ = s => document.querySelector(s);
     function show(obj) {
       return `<pre>${typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)}</pre>`;
     }
     function showError(detail) {
       $('#out').innerHTML = `<pre style="color:#ff4d6d">${detail}</pre>`;
-      $('#executionTime').innerHTML = ''; // Limpiar tiempo si hay error
+      $('#executionTime').innerHTML = '';
     }
     
-    // --- MODIFICADO: renderTable ---
     function renderTable(columns, rows) {
-      // Función helper para chequear si es una ruta de imagen
-      const isImagePath = (s) => (typeof s === 'string' && (s.endsWith('.jpg') || s.endsWith('.png') || s.endsWith('.jpeg')));
+      const isImagePath = (s) => {
+        if (typeof s !== 'string') return false;
+        const x = s.toLowerCase();
+        return x.endsWith('.jpg') || x.endsWith('.jpeg') ||
+              x.endsWith('.png') || x.endsWith('.bmp') ||
+              x.endsWith('.gif') || x.endsWith('.webp');
+      };
 
-      const head = `<tr>${columns.map(c=>`<th>${c}</th>`).join('')}</tr>`;
-      
+      const isAudioPath = (s) => {
+        if (typeof s !== 'string') return false;
+        const x = s.toLowerCase();
+        return x.endsWith('.mp3') || x.endsWith('.wav') ||
+              x.endsWith('.ogg') || x.endsWith('.flac') ||
+              x.endsWith('.m4a');
+      };
+
+      const head = `<tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr>`;
+
       const body = rows.map(r => {
         const cells = r.map(v => {
-          // Si es una ruta de imagen, renderizar como <img>
           if (isImagePath(v)) {
-            // Asumimos que la ruta es relativa al servidor o es un enlace
-            // Para rutas de disco locales (ej. C:\...) esto no funcionará
-            // pero si los datos en el CSV son enlaces web, sí.
-            // Para la consulta, el servidor debe devolver una ruta web.
+            // mini-thumbnail de la imagen
             return `<td><img src="${v}" class="thumbnail" alt="${v}" loading="lazy"></td>`;
+          }
+          if (isAudioPath(v)) {
+            // pequeño reproductor de audio
+            return `
+              <td>
+                <audio controls preload="none" style="width:160px;">
+                  <source src="${v}">
+                  Tu navegador no soporta audio.
+                </audio>
+              </td>`;
           }
           return `<td>${v}</td>`;
         }).join('');
         return `<tr>${cells}</tr>`;
       }).join('');
-      
+
       return `<table>${head}${body}</table>`;
     }
 
-    // ---------- dropzone (CSV) ----------
+    // Dropzone CSV
     const dz = $('#dropZone');
     const fileInput = $('#fileInput');
     let pickedFile = null;
@@ -211,10 +236,24 @@
       $('#dzLabel').textContent = `Archivo listo: ${f.name}`;
     });
 
-    // --- NUEVO: Dropzone (Consulta MM) ---
+    // Dropzone consulta multimedia (imagen / audio)
     const queryDz = $('#queryDropZone');
     const queryFileInput = $('#queryFileInput');
-    let queryPickedFile = null; // Archivo de imagen para consulta
+    const queryDzLabel = $('#queryDzLabel');
+    let queryPickedFile = null;
+    let mmMode = 'image';
+
+    // selector de modo
+    document.querySelectorAll('input[name="mmMode"]').forEach(radio => {
+      radio.addEventListener('change', e => {
+        mmMode = e.target.value;
+        queryPickedFile = null;
+        queryFileInput.value = '';
+        queryDzLabel.textContent = mmMode === 'image'
+          ? 'Arrastra tu imagen de consulta aquí o haz clic'
+          : 'Arrastra tu audio de consulta aquí o haz clic';
+      });
+    });
 
     queryDz.addEventListener('click', () => queryFileInput.click());
     queryDz.addEventListener('dragover', e => { e.preventDefault(); queryDz.classList.add('dragover'); });
@@ -223,20 +262,38 @@
       e.preventDefault(); queryDz.classList.remove('dragover');
       const f = e.dataTransfer.files && e.dataTransfer.files[0];
       if (!f) return;
-      if (!f.type.startsWith('image/')) { alert('Solo archivos de imagen'); return; }
+
+      const isOk = mmMode === 'image'
+        ? f.type.startsWith('image/')
+        : f.type.startsWith('audio/');
+
+      if (!isOk) {
+        alert(mmMode === 'image' ? 'Solo archivos de imagen' : 'Solo archivos de audio');
+        return;
+      }
       queryPickedFile = f;
-      $('#queryDzLabel').textContent = `Imagen de consulta lista: ${f.name}`;
+      queryDzLabel.textContent =
+        (mmMode === 'image' ? 'Imagen' : 'Audio') + ` de consulta listo: ${f.name}`;
     });
+
     queryFileInput.addEventListener('change', e => {
       const f = e.target.files[0];
       if (!f) return;
-      if (!f.type.startsWith('image/')) { alert('Solo archivos de imagen'); queryFileInput.value=''; return; }
+
+      const isOk = mmMode === 'image'
+        ? f.type.startsWith('image/')
+        : f.type.startsWith('audio/');
+
+      if (!isOk) {
+        alert(mmMode === 'image' ? 'Solo archivos de imagen' : 'Solo archivos de audio');
+        queryFileInput.value = '';
+        return;
+      }
       queryPickedFile = f;
-      $('#queryDzLabel').textContent = `Imagen de consulta lista: ${f.name}`;
+      queryDzLabel.textContent =
+        (mmMode === 'image' ? 'Imagen' : 'Audio') + ` de consulta listo: ${f.name}`;
     });
 
-
-    // --- MODIFICADO: API (runSQL) ---
     async function runSQL() {
       const query = $('#sql').value;
       const out = $('#out');
@@ -249,26 +306,20 @@
       let body;
       let headers = {'Content-Type': 'application/json'};
 
-      // 1. Determinar si es una consulta MM
       if (query.includes('<->')) {
         if (!queryPickedFile) {
-          return showError("Consulta de similitud detectada (<->), pero no se ha cargado ninguna imagen de consulta.");
+          return showError("Consulta de similitud detectada (<->), pero no se ha cargado ningún archivo de consulta (imagen o audio).");
         }
-        
-        // Es una consulta MM: usamos FormData
-        endpoint = '/api/sql_mm_query'; // Nuevo endpoint
+        endpoint = '/api/sql_mm_query';
         const fd = new FormData();
         fd.append('query', query);
         fd.append('query_file', queryPickedFile);
         body = fd;
-        headers = {}; // FormData establece su propio Content-Type
-        
+        headers = {};
       } else {
-        // Es una consulta normal (Texto, BTree, etc.)
         body = JSON.stringify({ query });
       }
 
-      // 2. Ejecutar la llamada
       try {
         const res = await fetch(endpoint, {
           method: 'POST',
@@ -279,25 +330,25 @@
         let data; try { data = await res.json(); } catch { data = await res.text(); }
         if (!res.ok) return showError(typeof data === 'string' ? data : data.detail || 'Error');
 
-        // 3. Renderizar resultados
         if (data.execution_time) {
           executionTimeContainer.innerHTML = `Tiempo de ejecución: ${data.execution_time.toFixed(4)} segundos`;
         }
         
         const results = data.results; 
-        if (results.rows && results.columns) {
+        if (results && results.rows && results.columns) {
           const idx = results.used_index ? `<p><small>Usó índice: ${results.used_index.type} en ${results.used_index.column}</small></p>` : '';
           const totalRows = results.rows.length;
           const limit = 150;
           const rowsToDisplay = totalRows > limit ? results.rows.slice(0, limit) : results.rows;
           const totalRowsText = totalRows > limit ? `<p>Total de registros retornados: ${totalRows}</p>` : '';
           out.innerHTML = idx + totalRowsText + renderTable(results.columns, rowsToDisplay);
-        } 
-        else {
+        } else {
           out.innerHTML = show(results);
         }
 
-      } catch (e) { showError('Network/JS error: ' + e); }
+      } catch (e) {
+        showError('Network/JS error: ' + e);
+      }
     }
 
     async function uploadCSV() {
@@ -306,7 +357,6 @@
       const file = pickedFile;
       if (!file) return showError('Arrastra un .csv o haz clic en el cuadro.');
       
-      // UI: preparar barra y timer
       const box = $('#uploadStatus');
       const label = $('#progLabel');
       const bar = $('#progBar');
@@ -329,7 +379,6 @@
       const uploadBtn = $('#uploadBtn');
       uploadBtn.disabled = true;
 
-      // Temporizador y cálculo de velocidad
       const start = performance.now();
       let lastBytes = 0;
       let lastTs = start;
@@ -350,7 +399,6 @@
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/upload');
 
-      // Progreso real de subida
       xhr.upload.onprogress = (e) => {
         const now = performance.now();
         if (e.lengthComputable) {
@@ -359,7 +407,6 @@
           bar.style.width = perc + '%';
           pct.textContent = perc + '%';
         }
-        // velocidad instantánea suavizada
         const deltaBytes = e.loaded - lastBytes;
         const deltaMs = Math.max(1, now - lastTs);
         const bytesPerSec = deltaBytes * 1000 / deltaMs;
@@ -369,14 +416,12 @@
       };
 
       xhr.onloadstart = () => {
-        // timer de reloj
         tickTimer = setInterval(() => {
           tspan.textContent = fmtTime(performance.now() - start);
         }, 250);
       };
 
       xhr.onreadystatechange = () => {
-        // Cuando termina de subir pero el servidor aún procesa:
         if (xhr.readyState === 2 || xhr.readyState === 3) {
           label.textContent = 'Procesando…';
           bar.classList.add('indeterminate');
@@ -414,7 +459,6 @@
       xhr.send(fd);
     }
 
-
     async function listTables() {
       try {
         const res = await fetch('/api/tables');
@@ -434,7 +478,6 @@
       });
     }
 
-    // ---------- Modal de tabla ----------
     const modal = $('#modal');
     const modalTitle = $('#modalTitle');
     const modalBody = $('#modalBody');
@@ -476,7 +519,6 @@
       }
     }
 
-    // ---------- chips de SQL ----------
     function attachChips(){
       document.querySelectorAll('.chip-btn[data-sql]').forEach(btn=>{
         btn.addEventListener('click', ()=>{
@@ -488,7 +530,6 @@
       });
     }
 
-    // ---------- bindings ----------
     $('#runBtn').onclick = runSQL;
     $('#refreshBtn').onclick = listTables;
     $('#uploadBtn').onclick = uploadCSV;

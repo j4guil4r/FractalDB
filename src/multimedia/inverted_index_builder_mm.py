@@ -185,3 +185,20 @@ class MMInvertedIndexBuilder:
         with open(self.final_meta_path, 'wb') as f:
             pickle.dump(final_metadata, f)
         print(f"Metadatos finales (MM) y Lexicón guardados en {self.final_meta_path}")
+
+class AudioMMInvertedIndexBuilder(MMInvertedIndexBuilder):
+    """Índice invertido multimedia para audio, mismo SPIMI que imágenes."""
+
+    def __init__(self, data_dir: str = "data", k_clusters: int = 0):
+        super().__init__(data_dir=data_dir, k_clusters=k_clusters)
+        self.temp_block_dir = os.path.join(
+            data_dir, f"spimi_blocks_mm_audio_k{k_clusters}"
+        )
+        os.makedirs(self.temp_block_dir, exist_ok=True)
+        self.final_index_path = os.path.join(
+            data_dir, f"mm_audio_inverted_index_k{k_clusters}.dat"
+        )
+        self.final_meta_path = os.path.join(
+            data_dir, f"mm_audio_inverted_index_k{k_clusters}.meta"
+        )
+        self.block_file_paths = []

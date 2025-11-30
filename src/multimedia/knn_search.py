@@ -1,195 +1,159 @@
 import os
 import pickle
-import numpy as np
 import heapq
-import math
-from typing import List, Tuple, Iterable, Dict, Any
+from typing import Iterable, Tuple, List, Any, Optional, Dict
 
-from src.multimedia.histogram_builder import BoVWHistogramBuilder
+import numpy as np
 
-class KNNSearch:
-    
-    def __init__(self, k_clusters: int, data_dir: str = 'data'):
+from .histogram_builder import BoVWHistogramBuilder, BaseBoVWHistogramBuilder, AudioBoVWHistogramBuilder
+
+
+class BaseKNNSearch:
+    """Búsqueda secuencial KNN genérica con TF-IDF y coseno."""
+
+    def __init__(
+        self,
+        k_clusters: int,
+        data_dir: str,
+        hist_builder: BaseBoVWHistogramBuilder,
+        prefix: str,
+    ):
         self.k = k_clusters
         self.data_dir = data_dir
-        
-        # Inicializar el generador de histogramas (Paso 3 anterior)
-        try:
-            self.hist_builder = BoVWHistogramBuilder(k_clusters, data_dir)
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-            print("Asegúrate de haber construido el codebook primero.")
-            raise
-            
-        # Ruta al archivo de la base de datos KNN (Paso 4)
-        self.db_path = os.path.join(data_dir, f"mm_knn_seq_db_k{self.k}.pkl")
-        
-        # Estos se llenarán al construir o cargar la BD
+        self.hist_builder = hist_builder
+        self.prefix = prefix
+
+        self.db_path = os.path.join(data_dir, f"{prefix}_knn_seq_db_k{self.k}.pkl")
+
         self.idf_vector: Optional[np.ndarray] = None
-        self.image_ids: List[Any] = []
+        self.ids: List[Any] = []
         self.tfidf_vectors: Optional[np.ndarray] = None
         self.vector_norms: Optional[np.ndarray] = None
 
-    def build_database(self, image_id_path_tuples: Iterable[Tuple[Any, str]]):
-        # Construye la base de datos TF-IDF y la guarda en disco.
+    def build_database(self, id_path_tuples: Iterable[Tuple[Any, str]]) -> None:
+        print(f"[KNN] Construyendo BD secuencial prefix={self.prefix}...")
 
-        print("Iniciando construcción de BD KNN Secuencial (TF-IDF)...")
-        
-        raw_histograms: Dict[Any, np.ndarray] = {}
+        raw_hists: Dict[Any, np.ndarray] = {}
+        df = np.zeros(self.k, dtype=np.int32)
         doc_count = 0
-        # Doc Frequency (df): cuántos documentos contienen cada palabra visual
-        df = np.zeros(self.k, dtype=np.int32) 
-        
-        # --- Fase 1: Calcular TF y DF ---
-        print("Fase 1/3: Generando histogramas (TF) y calculando DF...")
-        for img_id, img_path in image_id_path_tuples:
-            hist_tf = self.hist_builder.create_histogram_from_path(img_path)
-            
-            if hist_tf is not None:
-                raw_histograms[img_id] = hist_tf
-                # Actualizar DF: +1 para cada palabra visual presente
+
+        for obj_id, path in id_path_tuples:
+            hist_tf = self.hist_builder.create_histogram_from_path(path)
+            if hist_tf is not None and np.sum(hist_tf) > 0:
+                raw_hists[obj_id] = hist_tf
                 df[hist_tf > 0] += 1
                 doc_count += 1
-                
-            if doc_count % 500 == 0:
-                print(f"  ... {doc_count} histogramas procesados.")
+                if doc_count % 200 == 0:
+                    print(f"[KNN] {doc_count} objetos procesados.")
 
         if doc_count == 0:
-            print("Error: No se procesaron imágenes.")
+            print("[KNN] No se procesaron objetos.")
             return
-
-        # --- Fase 2: Calcular IDF ---
-        print("Fase 2/3: Calculando vector IDF...")
-        # IDF Suavizado: log( (N+1) / (df+1) ) + 1
 
         N = doc_count
         self.idf_vector = np.log((N + 1) / (df + 1)) + 1.0
-        
-        # --- Fase 3: Calcular TF-IDF y Normas ---
-        print("Fase 3/3: Calculando vectores TF-IDF y Normas...")
-        image_ids_list = []
-        tfidf_vectors_list = []
-        vector_norms_list = []
-        
-        for img_id, hist_tf in raw_histograms.items():
-            # Ponderación TF-IDF 
+
+        ids: List[Any] = []
+        tfidf_list: List[np.ndarray] = []
+        norms: List[float] = []
+
+        for obj_id, hist_tf in raw_hists.items():
             tfidf_vec = hist_tf * self.idf_vector
-            
-            # Calcular Norma Euclidiana (L2-norm)
-            norm = np.linalg.norm(tfidf_vec)
-            
-            if norm > 0:
-                image_ids_list.append(img_id)
-                tfidf_vectors_list.append(tfidf_vec)
-                vector_norms_list.append(norm)
+            nrm = np.linalg.norm(tfidf_vec)
+            if nrm <= 0:
+                continue
+            ids.append(obj_id)
+            tfidf_list.append(tfidf_vec)
+            norms.append(float(nrm))
 
-        # Convertir listas a arrays de numpy eficientes
-        self.image_ids = image_ids_list
-        self.tfidf_vectors = np.array(tfidf_vectors_list, dtype=np.float32)
-        self.vector_norms = np.array(vector_norms_list, dtype=np.float32)
+        self.ids = ids
+        self.tfidf_vectors = np.array(tfidf_list, dtype=np.float32)
+        self.vector_norms = np.array(norms, dtype=np.float32)
 
-        # Guardar en disco
         db_data = {
-            'ids': self.image_ids,
-            'tfidf_vectors': self.tfidf_vectors,
-            'vector_norms': self.vector_norms,
-            'idf_vector': self.idf_vector
+            "ids": self.ids,
+            "tfidf_vectors": self.tfidf_vectors,
+            "vector_norms": self.vector_norms,
+            "idf_vector": self.idf_vector,
         }
-        
-        with open(self.db_path, 'wb') as f:
+
+        with open(self.db_path, "wb") as f:
             pickle.dump(db_data, f)
-            
-        print(f"¡Construcción completada! BD guardada en {self.db_path}")
-        print(f"  -> Vectores TF-IDF: {self.tfidf_vectors.shape}")
 
-    def load_database(self):
-        # Carga la base de datos TF-IDF desde el disco a la RAM
+        print(f"[KNN] BD guardada en {self.db_path}")
+        print(f"[KNN] Vectores: {self.tfidf_vectors.shape}")
+
+    def load_database(self) -> None:
         if not os.path.exists(self.db_path):
-            raise FileNotFoundError(f"Archivo de BD no encontrado: {self.db_path}")
-            
-        print(f"Cargando BD KNN Secuencial desde {self.db_path}...")
-        with open(self.db_path, 'rb') as f:
-            db_data = pickle.load(f)
-            
-        self.image_ids = db_data['ids']
-        self.tfidf_vectors = db_data['tfidf_vectors']
-        self.vector_norms = db_data['vector_norms']
-        self.idf_vector = db_data['idf_vector']
-        print(f"  -> BD cargada. {len(self.image_ids)} vectores en RAM.")
+            raise FileNotFoundError(f"[KNN] No existe BD: {self.db_path}")
 
-    def search_by_path(self, query_image_path: str, top_k: int = 10) -> List[Tuple[float, Any]]:
-        # Busca las Top-K imágenes más similares a una imagen de consulta.
+        with open(self.db_path, "rb") as f:
+            db = pickle.load(f)
 
-        # Asegurarse de que la BD esté en RAM
+        self.ids = db["ids"]
+        self.tfidf_vectors = db["tfidf_vectors"]
+        self.vector_norms = db["vector_norms"]
+        self.idf_vector = db["idf_vector"]
+
+        print(f"[KNN] BD cargada. {len(self.ids)} vectores.")
+
+    def _search_hist(self, q_hist_tf: np.ndarray, top_k: int) -> List[Tuple[float, Any]]:
         if self.tfidf_vectors is None:
             self.load_database()
-            
-        # Generar Histograma (TF) para la consulta [cite: 125]
-        q_hist_tf = self.hist_builder.create_histogram_from_path(query_image_path)
-        if q_hist_tf is None:
-            print("Error: No se pudo procesar la imagen de consulta.")
-            return []
-            
-        # Ponderar (TF-IDF) y normalizar la consulta
-        q_tfidf_vec = q_hist_tf * self.idf_vector
-        q_norm = np.linalg.norm(q_tfidf_vec)
-        
-        if q_norm == 0:
-            print("Advertencia: El vector de consulta es cero (sin características).")
-            return []
-            
-        # Calcular Similitud Coseno (Sequential Scan) 
-        
-        dot_products = np.dot(self.tfidf_vectors, q_tfidf_vec)
-        
-        # (|Q| * |D|) -> Producto de normas
-        norm_products = self.vector_norms * q_norm
-        
-        # División elemento a elemento
-        similarities = dot_products / norm_products
 
-        # Usar un heap para mantener el Top-K 
-        top_k_heap: List[Tuple[float, Any]] = []
-        
-        for i, score in enumerate(similarities):
-            img_id = self.image_ids[i]
-            
-            # heapq es un min-heap, así que guardamos (score, id)
-            if len(top_k_heap) < top_k:
-                heapq.heappush(top_k_heap, (score, img_id))
-            else:
-                # Reemplaza el más pequeño si el actual es más grande
-                heapq.heappushpop(top_k_heap, (score, img_id))
-                
-        # Devolver resultados ordenados de mayor a menor
-        return sorted(top_k_heap, reverse=True)
-
-    def search_by_bytes(self, query_image_bytes: bytes, top_k: int = 10) -> List[Tuple[float, Any]]:
-        # Busca las Top-K imágenes más similares a unos bytes de imagen.
-
-        if self.tfidf_vectors is None:
-            self.load_database()
-            
-        q_hist_tf = self.hist_builder.create_histogram_from_bytes(query_image_bytes)
-        if q_hist_tf is None:
+        if q_hist_tf is None or np.sum(q_hist_tf) == 0:
             return []
-            
-        q_tfidf_vec = q_hist_tf * self.idf_vector
-        q_norm = np.linalg.norm(q_tfidf_vec)
-        
+
+        q_tfidf = q_hist_tf * self.idf_vector
+        q_norm = np.linalg.norm(q_tfidf)
         if q_norm == 0:
             return []
-            
-        dot_products = np.dot(self.tfidf_vectors, q_tfidf_vec)
-        norm_products = self.vector_norms * q_norm
-        similarities = dot_products / norm_products
 
-        top_k_heap: List[Tuple[float, Any]] = []
-        for i, score in enumerate(similarities):
-            img_id = self.image_ids[i]
-            if len(top_k_heap) < top_k:
-                heapq.heappush(top_k_heap, (score, img_id))
+        dot_products = np.dot(self.tfidf_vectors, q_tfidf)
+        norm_products = self.vector_norms * q_norm
+        sims = dot_products / norm_products
+
+        heap: List[Tuple[float, Any]] = []
+        for i, score in enumerate(sims):
+            obj_id = self.ids[i]
+            if len(heap) < top_k:
+                heapq.heappush(heap, (float(score), obj_id))
             else:
-                heapq.heappushpop(top_k_heap, (score, img_id))
-                
-        return sorted(top_k_heap, reverse=True)
+                heapq.heappushpop(heap, (float(score), obj_id))
+
+        return sorted(heap, reverse=True)
+
+    def search_by_path(self, path: str, top_k: int = 10) -> List[Tuple[float, Any]]:
+        hist_tf = self.hist_builder.create_histogram_from_path(path)
+        return self._search_hist(hist_tf, top_k)
+
+    def search_by_bytes(self, data: bytes, top_k: int = 10) -> List[Tuple[float, Any]]:
+        hist_tf = self.hist_builder.create_histogram_from_bytes(data)
+        return self._search_hist(hist_tf, top_k)
+
+
+class KNNSearch(BaseKNNSearch):
+    """KNN secuencial para imágenes."""
+
+    def __init__(self, k_clusters: int, data_dir: str = "data"):
+        hist_builder = BoVWHistogramBuilder(k_clusters, data_dir)
+        super().__init__(
+            k_clusters=k_clusters,
+            data_dir=data_dir,
+            hist_builder=hist_builder,
+            prefix="mm",
+        )
+
+
+
+class AudioKNNSearch(BaseKNNSearch):
+    """KNN secuencial para audio."""
+
+    def __init__(self, k_clusters: int, data_dir: str = "data"):
+        hist_builder = AudioBoVWHistogramBuilder(k_clusters, data_dir)
+        super().__init__(
+            k_clusters=k_clusters,
+            data_dir=data_dir,
+            hist_builder=hist_builder,
+            prefix="mm_audio",
+        )

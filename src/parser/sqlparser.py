@@ -44,8 +44,10 @@ class SQLParser:
             r"CREATE\s+FTS\s+INDEX\s+ON\s+(\w+)\s*\((.*?)\)",
             re.IGNORECASE | re.DOTALL
         )
+
+        # MODIFICADO: ahora acepta TYPE BOVW o TYPE BOAW para imagen/audio
         self.re_create_mm_index = re.compile(
-            r"CREATE\s+MM\s+INDEX\s+ON\s+(\w+)\s*\((\w+)\)\s+TYPE\s+BOVW\s+K=(\d+)",
+            r"CREATE\s+MM\s+INDEX\s+ON\s+(\w+)\s*\((\w+)\)\s+TYPE\s+(BOVW|BOAW)\s+K=(\d+)",
             re.IGNORECASE
         )
 
@@ -85,7 +87,17 @@ class SQLParser:
 
         match = self.re_create_mm_index.fullmatch(sql)
         if match:
-            return self._parse_create_mm_index(match.group(1), match.group(2), match.group(3))
+            # grupos:
+            # 1: tabla
+            # 2: columna
+            # 3: tipo índice multimedia (BOVW | BOAW)
+            # 4: K
+            return self._parse_create_mm_index(
+                match.group(1),
+                match.group(2),
+                match.group(3),
+                match.group(4),
+            )
 
         match = self.re_insert.fullmatch(sql)
         if match:
@@ -204,7 +216,8 @@ class SQLParser:
     # (P2): Aceptar limit_str y parsear FTS/MM 
     def _parse_select(self, cols_str: str, table_name: str, where_str: str, limit_str: str) -> Dict[str, Any]:
         columns = [c.strip() for c in cols_str.split(',')]
-        if "*" in columns: columns = ["*"]
+        if "*" in columns: 
+            columns = ["*"]
         plan = {
             'command': 'SELECT',
             'table_name': table_name,
@@ -224,13 +237,13 @@ class SQLParser:
         )
         if match_mm:
             k_value = match_mm.group(3)
-            mode_value = match_mm.group(4) # Captura 'SEQ' o 'INDEX'
+            mode_value = match_mm.group(4)  # 'SEQ' o 'INDEX'
             plan['where'] = {
                 'column': match_mm.group(1),
                 'op': 'MM_SIM',
                 'query_path': match_mm.group(2),
                 'k': int(k_value) if k_value else None,
-                'mode': mode_value.upper() if mode_value else 'INDEX' # Default a Indexado
+                'mode': mode_value.upper() if mode_value else 'INDEX'
             }
             return plan
 
@@ -326,11 +339,17 @@ class SQLParser:
             'columns': columns
         }
 
-    def _parse_create_mm_index(self, table_name: str, col_name: str, k_str: str) -> Dict[str, Any]:
+    def _parse_create_mm_index(self, table_name: str, col_name: str, mm_type: str, k_str: str) -> Dict[str, Any]:
+        """
+        Soporta:
+          CREATE MM INDEX ON tabla(columna) TYPE BOVW K=32;  -- típico para imágenes
+          CREATE MM INDEX ON tabla(columna) TYPE BOAW K=32;  -- típico para audio
+        """
         return {
             'command': 'CREATE_MM_INDEX',
             'table_name': table_name,
             'column': col_name.strip(),
+            'mm_type': mm_type.upper(),   # 'BOVW' o 'BOAW'
             'k': int(k_str)
         }
     # --- FIN NUEVO (P2) ---

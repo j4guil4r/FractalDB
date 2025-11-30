@@ -1,76 +1,80 @@
-# src/multimedia/histogram_builder.py
-
-import os
 import numpy as np
-import pickle
+from typing import Optional
+
 from sklearn.cluster import MiniBatchKMeans
-from typing import Optional, Union
 from sklearn.neighbors import KDTree
 
-# Importamos nuestros otros módulos multimedia
-from src.multimedia.feature_extractor import SIFTExtractor
-from src.multimedia.codebook_builder import CodebookBuilder
+from .feature_extractor import SIFTExtractor
 
-class BoVWHistogramBuilder:
-    
-    def __init__(self, k: int, data_dir: str = 'data'):
+from .audio_feature_extractor import  MFCCExtractor
+
+from .codebook_builder import BaseCodebookBuilder
+
+
+
+class BaseBoVWHistogramBuilder:
+    """Generador de histogramas BoVW/BoAW genérico."""
+
+    def __init__(
+        self,
+        k: int,
+        data_dir: str,
+        extractor,
+        prefix: str,
+    ):
         self.k = k
         self.data_dir = data_dir
-        
-        # Cargar el Codebook (el modelo K-Means entrenado)
-        self.kmeans: Optional[MiniBatchKMeans] = CodebookBuilder.load_codebook(k, data_dir)
+        self.extractor = extractor
+
+        self.kmeans: Optional[MiniBatchKMeans] = BaseCodebookBuilder.load_codebook(
+            k, data_dir=data_dir, prefix=prefix
+        )
         if self.kmeans is None:
             raise FileNotFoundError(
-                f"No se pudo cargar el codebook para K={k}. "
-                "¿Ejecutaste 'codebook_builder.py' primero?"
+                f"No se pudo cargar el codebook para prefix={prefix}, K={k}."
             )
-        
-        if self.kmeans:
-            print("Construyendo KD-Tree para búsqueda rápida...")
-            self.tree = KDTree(self.kmeans.cluster_centers_, leaf_size=40)
-            
-        # Inicializar el extractor SIFT
-        self.extractor = SIFTExtractor()
-        
-        print(f"Generador de histogramas (K={k}) listo.")
+
+        self.tree = KDTree(self.kmeans.cluster_centers_, leaf_size=40)
+        print(f"[Hist] prefix={prefix} K={k} listo.")
 
     def _create_histogram(self, descriptors: Optional[np.ndarray]) -> np.ndarray:
-        # Función interna para convertir descriptores SIFT en un histograma TF.
-
-        # Si no hay descriptores, devuelve un vector de ceros
-        if descriptors is None:
+        if descriptors is None or descriptors.size == 0:
             return np.zeros(self.k, dtype=np.float32)
-            
-        # Asignar cada descriptor al "visual word" (cluster) más cercano
-        _dist, visual_words = self.tree.query(descriptors, k=1)
+
+        _, visual_words = self.tree.query(descriptors, k=1)
         visual_words = visual_words.flatten()
-        
-        # Contar las ocurrencias de cada "visual word"
         hist = np.bincount(visual_words, minlength=self.k)
-        
-        # Devolvemos el histograma como TF (Term Frequency) crudo
         return hist.astype(np.float32)
 
-    def create_histogram_from_path(self, image_path: str) -> Optional[np.ndarray]:
-        # Genera un histograma BoVW (vector TF de tamaño K) para una
+    def create_histogram_from_path(self, path: str) -> Optional[np.ndarray]:
+        des = self.extractor.extract_from_path(path)
+        return self._create_histogram(des)
 
-        if self.kmeans is None:
+    def create_histogram_from_bytes(self, data: bytes) -> Optional[np.ndarray]:
+        if not hasattr(self.extractor, "extract_from_bytes"):
             return None
-            
-        # Extraer descriptores SIFT
-        descriptors = self.extractor.extract_from_path(image_path)
-        
-        # Convertir descriptores a histograma
-        return self._create_histogram(descriptors)
+        des = self.extractor.extract_from_bytes(data)
+        return self._create_histogram(des)
 
-    def create_histogram_from_bytes(self, image_bytes: bytes) -> Optional[np.ndarray]:
-        # Genera un histograma BoVW (vector TF de tamaño K) 
 
-        if self.kmeans is None:
-            return None
-            
-        # Extraer descriptores SIFT
-        descriptors = self.extractor.extract_from_bytes(image_bytes)
-        
-        # Convertir descriptores a histograma
-        return self._create_histogram(descriptors)
+class BoVWHistogramBuilder(BaseBoVWHistogramBuilder):
+    """Histograma BoVW para imágenes (SIFT)."""
+
+    def __init__(self, k: int, data_dir: str = "data"):
+        super().__init__(
+            k=k,
+            data_dir=data_dir,
+            extractor=SIFTExtractor(),
+            prefix="mm",
+        )
+
+class AudioBoVWHistogramBuilder(BaseBoVWHistogramBuilder):
+    """Histograma BoAW para audio (MFCC)."""
+
+    def __init__(self, k: int, data_dir: str = "data"):
+        super().__init__(
+            k=k,
+            data_dir=data_dir,
+            extractor=MFCCExtractor(),
+            prefix="mm_audio",
+        )
