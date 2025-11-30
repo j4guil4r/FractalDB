@@ -70,6 +70,7 @@ class MMInvertedIndexBuilder:
         block_num = 0
         in_memory_index = defaultdict(list)
         
+        docs_in_block = 0
         for img_id, hist_tf in hist_iterator_factory():
             if hist_tf is None or np.sum(hist_tf) == 0:
                 self.doc_metadata[img_id] = (0, 0.0)
@@ -86,9 +87,11 @@ class MMInvertedIndexBuilder:
                 in_memory_index[int(term_id)].append((img_id, tf))
 
             # (Lógica de volcado de SPIMI simplificada)
-            if self.total_docs % 5000 == 0: # Volcar cada 5000 docs
+            docs_in_block += 1
+            if docs_in_block >= 5000:
                 self._write_block_to_disk(in_memory_index, block_num)
-                block_num += 1
+                docs_in_block = 0
+                block_num += 1  
                 in_memory_index.clear()
         
         if in_memory_index:
